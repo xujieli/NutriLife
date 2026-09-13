@@ -27,12 +27,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
-
+from typing import cast, List
+from llama_index.core.embeddings.utils import EmbedType
 from llama_index.core import VectorStoreIndex
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.retrievers import BaseRetriever
-from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+from llama_index.core.schema import BaseNode, NodeWithScore, QueryBundle, TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
 from loguru import logger
@@ -76,8 +76,8 @@ class HybridRetriever:
         self,
         config: RAGSettings | None = None,
         reranker: BaseNodePostprocessor | None = None,
-        nodes: list[Any] | None = None,
-        embed_model: Any | None = None,
+        nodes: list[BaseNode] | None = None,
+        embed_model: EmbedType | None = None,
     ) -> None:
         self.config = config or get_settings().rag
         self._nodes = nodes
@@ -123,10 +123,12 @@ class HybridRetriever:
         # ── 2. 构建 BM25 检索器 ──────────────────────────────────────
         bm25_nodes = self._nodes or self._load_nodes_from_cache()
         if not bm25_nodes:
-            logger.warning("BM25 节点为空，BM25 检索器将不可用或可能报错，请检查节点缓存文件。")
+            logger.warning(
+                "BM25 节点为空，BM25 检索器将不可用或可能报错，请检查节点缓存文件。"
+            )
             # 如果 BM25 必须有数据，这里可以 raise ValueError
         self._bm25_retriever = BM25Retriever.from_defaults(
-            nodes=bm25_nodes,
+            nodes=cast(List[BaseNode], bm25_nodes),
             similarity_top_k=cfg.bm25_top_k,
         )
         logger.info("BM25 检索器初始化完成 (top_k={})", cfg.bm25_top_k)
@@ -150,7 +152,7 @@ class HybridRetriever:
             self._reranker = FlagEmbeddingReranker(
                 model="BAAI/bge-reranker-v2-m3",
                 top_n=self.config.rerank_top_n,
-                use_fp16=False                    # 开启半精度加速（显著降低内存占用）
+                use_fp16=False,  # 开启半精度加速（显著降低内存占用）
             )
             logger.info("BGE Reranker 初始化成功 (model=BAAI/bge-reranker-v2-m3)")
 
@@ -190,9 +192,7 @@ class HybridRetriever:
             return []
 
     def _manual_rrf_fusion(
-        self, 
-        retriever_results: list[list[NodeWithScore]], 
-        k: int = 60
+        self, retriever_results: list[list[NodeWithScore]], k: int = 60
     ) -> list[NodeWithScore]:
         """
         手动实现 Reciprocal Rank Fusion (RRF)。
@@ -200,28 +200,28 @@ class HybridRetriever:
         """
         scores = {}
         node_map = {}
-        
+
         for results in retriever_results:
             for rank, node_with_score in enumerate(results):
                 # 获取节点的唯一标识 (node_id)
                 node_id = node_with_score.node.node_id
-                
+
                 # 计算 RRF 分数: 1 / (k + rank + 1)
                 # rank 从 0 开始，所以 +1 保证分母不为 0
                 rrf_score = 1.0 / (k + rank + 1)
                 scores[node_id] = scores.get(node_id, 0.0) + rrf_score
-                
+
                 # 保留节点引用（用于后续组装结果）
                 if node_id not in node_map:
                     node_map[node_id] = node_with_score.node
-                    
+
         # 按 RRF 分数降序排序
         sorted_node_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
-        
+
         # 重新打包为 NodeWithScore，截取 top_k
         fused_results = [
             NodeWithScore(node=node_map[node_id], score=scores[node_id])
-            for node_id in sorted_node_ids[:self.config.fusion_top_k]
+            for node_id in sorted_node_ids[: self.config.fusion_top_k]
         ]
         return fused_results
 
@@ -245,9 +245,7 @@ class HybridRetriever:
             RuntimeError: 当检索器未初始化时。
         """
         if not self._initialized:
-            raise RuntimeError(
-                "HybridRetriever 尚未初始化，请先调用 .initialize()"
-            )
+            raise RuntimeError("HybridRetriever 尚未初始化，请先调用 .initialize()")
 
         logger.info("执行混合检索: query='{}'", query[:80])
         query_bundle = QueryBundle(query_str=query)
@@ -277,13 +275,17 @@ class HybridRetriever:
 
         # ── Step 3：手动执行 RRF 融合（替代 QueryFusionRetriever） ──
         fused_nodes = self._manual_rrf_fusion(
-            [vector_nodes, bm25_nodes], 
-            k=60  # RRF 常数 k，通常设为 60
+            [vector_nodes, bm25_nodes],
+            k=60,  # RRF 常数 k，通常设为 60
         )
         logger.debug("RRF 融合返回 {} 个候选节点", len(fused_nodes))
 
         # ── Step 3：Rerank 精排 ──────────────────────────────────
-        final_nodes = self._reranker.postprocess_nodes(fused_nodes, query_bundle) if self._reranker else fused_nodes
+        final_nodes = (
+            self._reranker.postprocess_nodes(fused_nodes, query_bundle)
+            if self._reranker
+            else fused_nodes
+        )
         logger.info(
             "混合检索完成：最终返回 {} 个节点",
             len(final_nodes),

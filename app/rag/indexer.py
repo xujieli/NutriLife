@@ -7,9 +7,9 @@ NutriLife 向量索引管理器。
 
 from __future__ import annotations
 
-from typing import Any
-
 from llama_index.core import VectorStoreIndex
+from llama_index.core.embeddings.utils import EmbedType
+from llama_index.core.schema import BaseNode
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from loguru import logger
@@ -19,8 +19,8 @@ from app.core.config import RAGSettings, get_settings
 
 
 def load_or_create_index(
-    nodes: list[Any] | None = None,
-    embed_model: Any | None = None,
+    nodes: list[BaseNode] | None = None,
+    embed_model: EmbedType | None = None,
     collection_name: str | None = None,
     *,
     rag_config: RAGSettings | None = None,

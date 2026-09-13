@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import functools
 
+import numpy as np
 from langchain_openai import ChatOpenAI
+from llama_index.embeddings.openai_like import OpenAILikeEmbedding
 from loguru import logger
+from pydantic import SecretStr
 
 from app.core.config import get_settings
-from llama_index.embeddings.openai_like import OpenAILikeEmbedding
-import numpy as np
-from typing import List
+
 
 class NormalizedBGEEmbedding(OpenAILikeEmbedding):
     """
@@ -29,7 +30,7 @@ class NormalizedBGEEmbedding(OpenAILikeEmbedding):
     彻底绕过 LlamaIndex 的 Score 转换 Bug。
     """
 
-    def _l2_normalize(self, vec: List[float]) -> List[float]:
+    def _l2_normalize(self, vec: list[float]) -> list[float]:
         """强制 L2 归一化，使向量模长严格等于 1"""
         arr = np.array(vec, dtype=np.float32)
         norm = np.linalg.norm(arr)
@@ -37,11 +38,11 @@ class NormalizedBGEEmbedding(OpenAILikeEmbedding):
             return [float(x) for x in (arr / norm)]
         return vec
 
-    def _get_text_embedding(self, text: str) -> List[float]:
+    def _get_text_embedding(self, text: str) -> list[float]:
         raw_vec = super()._get_text_embedding(text)
         return self._l2_normalize(raw_vec)
 
-    async def _aget_text_embedding(self, text: str) -> List[float]:
+    async def _aget_text_embedding(self, text: str) -> list[float]:
         raw_vec = await super()._aget_text_embedding(text)
         return self._l2_normalize(raw_vec)
 
@@ -95,9 +96,9 @@ def get_chat_llm(
     return ChatOpenAI(
         model=lm.model,
         base_url=lm.base_url,
-        api_key=lm.api_key,  # LM Studio 不校验 key，填任意字符串
+        api_key=SecretStr(lm.api_key),  # LM Studio 不校验 key，填任意字符串
         temperature=_temperature,
-        max_tokens=_max_tokens,
+        max_completion_tokens=_max_tokens,
         streaming=_streaming,
-        request_timeout=llm_cfg.request_timeout,
+        timeout=llm_cfg.request_timeout,
     )

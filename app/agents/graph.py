@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -60,9 +60,7 @@ _GENERAL_SYSTEM_PROMPT = """\
 如果问题与营养健康无关，礼貌地说明你的职责范围，不要编造信息。
 """
 
-_FALLBACK_RESPONSE = (
-    "抱歉，我的知识库中没有关于这个问题的准确信息，建议咨询专业医生。"
-)
+_FALLBACK_RESPONSE = "抱歉，我的知识库中没有关于这个问题的准确信息，建议咨询专业医生。"
 
 _RAG_SYSTEM_PROMPT = """\
 <instruction>
@@ -111,6 +109,7 @@ async def rag_retrieve_node(state: AgentState) -> dict[str, Any]:
     logger.info("RAG Retrieve: '{}'", query[:80])
 
     try:
+
         def _retrieve() -> list[Any]:
             from app.core.config import get_settings
             from app.rag.retriever import HybridRetriever
@@ -238,7 +237,7 @@ def route_after_memory_optimize(state: AgentState) -> str:
     return "general_chat"
 
 
-def build_graph(checkpointer: Any | None = None) -> "CompiledStateGraph":
+def build_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
     """组装并编译完整 Agent 图。
 
     Args:
@@ -286,7 +285,7 @@ def build_graph(checkpointer: Any | None = None) -> "CompiledStateGraph":
 # Checkpointer 懒加载与单例图
 # ──────────────────────────────────────────────────────────────────
 
-_compiled_graph: "CompiledStateGraph | None" = None
+_compiled_graph: CompiledStateGraph | None = None
 _postgres_checkpointer: Any | None = None
 _postgres_context: Any | None = None
 _graph_lock = asyncio.Lock()
@@ -294,10 +293,10 @@ _graph_lock = asyncio.Lock()
 
 def _checkpoint_database_url() -> str:
     """把 SQLAlchemy URL 转换为 langgraph-checkpoint-postgres 可接受的形式。"""
+
     def _normalize(url: str) -> str:
-        return (
-            url.replace("postgresql+psycopg://", "postgresql://")
-            .replace("postgresql+asyncpg://", "postgresql://")
+        return url.replace("postgresql+psycopg://", "postgresql://").replace(
+            "postgresql+asyncpg://", "postgresql://"
         )
 
     configured = os.getenv("LANGGRAPH_CHECKPOINT_URL", "").strip()
@@ -321,7 +320,7 @@ async def _ensure_postgres_checkpointer() -> Any | None:
             raw = await raw
 
         if hasattr(raw, "__aenter__"):
-            saver = await raw.__aenter__()
+            saver: Any = await raw.__aenter__()
             _postgres_context = raw
         else:
             saver = raw
@@ -360,7 +359,7 @@ async def close_checkpointer() -> None:
     _postgres_checkpointer = None
 
 
-async def get_graph() -> "CompiledStateGraph":
+async def get_graph() -> CompiledStateGraph:
     """获取编译后的 Agent 图单例，优先使用 PostgreSQL checkpointer。"""
     global _compiled_graph
 
@@ -382,18 +381,18 @@ async def get_graph() -> "CompiledStateGraph":
 async def arun(
     state: AgentState | dict,
     *,
-    config: dict | None = None,
+    config: RunnableConfig | None = None,
 ) -> AgentState:
     """异步执行一次完整 Agent 图。"""
     graph = await get_graph()
-    merged = {"recursion_limit": RECURSION_LIMIT, **(config or {})}
-    return await graph.ainvoke(state, merged)
+    merged: RunnableConfig = {"recursion_limit": RECURSION_LIMIT, **(config or {})}
+    return cast(AgentState, await graph.ainvoke(state, merged))
 
 
 def run(
     state: AgentState | dict,
     *,
-    config: dict | None = None,
+    config: RunnableConfig | None = None,
 ) -> AgentState:
     """同步执行一次完整 Agent 图（仅用于脚本 / 测试环境）。"""
     import asyncio

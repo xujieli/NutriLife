@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -91,8 +91,11 @@ async def extract_food_node(state: AgentState) -> dict:
     try:
         llm = get_chat_llm(temperature=0.0, streaming=False)
         structured = llm.with_structured_output(FoodExtraction)
-        result: FoodExtraction = await structured.ainvoke(
-            [SystemMessage(content=_EXTRACT_PROMPT), HumanMessage(content=text)]
+        result: FoodExtraction = cast(
+            FoodExtraction,
+            await structured.ainvoke(
+                [SystemMessage(content=_EXTRACT_PROMPT), HumanMessage(content=text)]
+            ),
         )
         foods = result.foods
     except Exception as exc:  # noqa: BLE001
@@ -174,9 +177,7 @@ def check_threshold_node(state: AgentState) -> dict:
     }
 
 
-async def generate_advice_node(
-    state: AgentState, config: RunnableConfig
-) -> dict:
+async def generate_advice_node(state: AgentState, config: RunnableConfig) -> dict:
     """生成建议（含无食物/LLM 失败时的兜底话术）。"""
     workflow_data = state.get("workflow_data", {})
     foods = workflow_data.get("foods", [])
@@ -184,11 +185,12 @@ async def generate_advice_node(
     exceeded = bool(workflow_data.get("exceeded", False))
 
     if not foods:
-        answer = "抱歉，我没能从你的消息里识别出食物。请告诉我具体吃了什么、大约多少量。"
+        answer = (
+            "抱歉，我没能从你的消息里识别出食物。请告诉我具体吃了什么、大约多少量。"
+        )
     else:
         record_lines = [
-            f"- {f['name']} {f['grams']:.0f}g ≈ {f['kcal']:.0f} kcal"
-            for f in foods
+            f"- {f['name']} {f['grams']:.0f}g ≈ {f['kcal']:.0f} kcal" for f in foods
         ]
         record = "\n".join(record_lines) + f"\n总热量：{total:.0f} kcal"
         if exceeded:
@@ -224,10 +226,7 @@ def _fallback_advice(total: float, exceeded: bool) -> str:
             f"本餐热量约 {total:.0f} 千卡，已超过建议阈值，"
             "建议减少油炸食物与含糖饮料，并增加蔬菜摄入。"
         )
-    return (
-        f"本餐热量约 {total:.0f} 千卡，处于合理范围，"
-        "注意荤素搭配、控制总摄入即可。"
-    )
+    return f"本餐热量约 {total:.0f} 千卡，处于合理范围，注意荤素搭配、控制总摄入即可。"
 
 
 def build_workflow_graph() -> CompiledStateGraph:

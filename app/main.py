@@ -7,20 +7,23 @@ NutriLife FastAPI 应用入口。
 - 挂载 API 路由
 - 定义生命周期钩子（startup / shutdown）
 """
-from llama_index.core import Settings
-# from llama_index.llms.openai import OpenAI
-from llama_index.llms.openai_like import OpenAILike
+
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from llama_index.core import Settings
+
+# from llama_index.llms.openai import OpenAI
+from llama_index.llms.openai_like import OpenAILike
 from loguru import logger
 
 from app.agents.graph import close_checkpointer
 from app.core.config import get_settings
 from app.core.database import close_db, init_db
 from app.core.llm import NormalizedBGEEmbedding
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -42,7 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Settings.embed_model = NormalizedBGEEmbedding(
         model_name=settings.lm_studio.embed_model,
         api_base="http://192.168.31.48:1234/v1",
-        api_key=lm.api_key
+        api_key=lm.api_key,
     )
     # Settings.llm = OpenAI(
     #     model=lm.model,

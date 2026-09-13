@@ -16,13 +16,16 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.schema import StreamEvent
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,12 +37,16 @@ from app.core.langfuse import get_langfuse_handler
 from app.core.models import SessionMetadata
 from app.schemas.chat import ChatRequest, SessionCreateRequest, SessionResponse
 
-try:
+if TYPE_CHECKING:
+    # 静态类型检查时，Pylance 只走这里，认为它永远是 langgraph 的类
     from langgraph.errors import GraphRecursionError
-except ImportError:  # pragma: no cover —— 版本差异兜底
+else:
+    try:
+        from langgraph.errors import GraphRecursionError
+    except ImportError:  # pragma: no cover —— 版本差异兜底
 
-    class GraphRecursionError(Exception):
-        """LangGraph 递归超限异常（版本兜底）。"""
+        class GraphRecursionError(Exception):
+            """LangGraph 递归超限异常（版本兜底）。"""
 
 
 router = APIRouter()
@@ -48,7 +55,7 @@ router = APIRouter()
 FINAL_ANSWER_NODES = frozenset({"rag_generate", "general_chat", "generate_advice"})
 
 # LM Studio 健康检查缓存（避免每个请求额外打一次网络、拖慢首 token）
-_HEALTH_CACHE: dict[str, Any] = {"checked_at": 0.0, "healthy": True}
+_HEALTH_CACHE: dict[str, float | bool] = {"checked_at": 0.0, "healthy": True}
 _HEALTH_TTL = 20.0
 
 
@@ -91,9 +98,7 @@ async def _save_session_metadata(
     """写入或更新会话元数据；数据库不可用时只记录日志。"""
     try:
         result = await session.execute(
-            select(SessionMetadata).where(
-                SessionMetadata.session_id == session_id
-            )
+            select(SessionMetadata).where(SessionMetadata.session_id == session_id)
         )
         row = result.scalar_one_or_none()
         if row is None:
@@ -104,7 +109,7 @@ async def _save_session_metadata(
                 )
             )
         else:
-            row.updated_at = datetime.now(timezone.utc)
+            row.updated_at = datetime.now(UTC)
         await session.commit()
     except Exception as exc:  # noqa: BLE001
         await session.rollback()
@@ -124,7 +129,7 @@ def _sessions_response(rows: list[SessionMetadata]) -> list[SessionResponse]:
     ]
 
 
-def _map_event(event: dict[str, Any]) -> dict[str, Any] | None:
+def _map_event(event: StreamEvent) -> dict[str, Any] | None:
     """将 LangGraph ``astream_events`` 事件映射为统一的流式协议。"""
     kind = event.get("event")
     if kind is None:
@@ -169,11 +174,10 @@ def _map_event(event: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _is_root_end(event: dict[str, Any]) -> bool:
+def _is_root_end(event: StreamEvent) -> bool:
     """判断是否为根图（整次运行）的结束事件。"""
-    return (
-        event.get("event") == "on_chain_end"
-        and "langgraph_node" not in (event.get("metadata") or {})
+    return event.get("event") == "on_chain_end" and "langgraph_node" not in (
+        event.get("metadata") or {}
     )
 
 
@@ -207,7 +211,7 @@ async def chat(
     handler = get_langfuse_handler()
     callbacks = [handler] if handler is not None else []
 
-    config: dict[str, Any] = {
+    config: RunnableConfig = {
         "callbacks": callbacks,
         "recursion_limit": RECURSION_LIMIT,
         "configurable": {"thread_id": session_id},
@@ -298,9 +302,7 @@ async def list_sessions(
     """返回历史会话列表，按最近更新时间倒序。"""
     try:
         result = await session.execute(
-            select(SessionMetadata).order_by(
-                SessionMetadata.updated_at.desc()
-            )
+            select(SessionMetadata).order_by(SessionMetadata.updated_at.desc())
         )
         rows = list(result.scalars().all())
         return _sessions_response(rows)

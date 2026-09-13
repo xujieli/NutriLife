@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 
@@ -70,11 +72,14 @@ async def router_node(state: AgentState) -> dict[str, str | float | list[str]]:
         # 路由需确定性：temperature 拉到最低，并关闭流式输出
         llm = get_chat_llm(temperature=0.0, streaming=False)
         structured_llm = llm.with_structured_output(RouterOutput)
-        result: RouterOutput = await structured_llm.ainvoke(
-            [
-                SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
-                HumanMessage(content=question),
-            ]
+        result: RouterOutput = cast(
+            RouterOutput,
+            await structured_llm.ainvoke(
+                [
+                    SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
+                    HumanMessage(content=question),
+                ]
+            ),
         )
     except Exception as exc:  # noqa: BLE001 —— 任何失败都走兜底，不允许抛出
         logger.warning("Router 结构化输出失败，回退 GENERAL_CHAT: {}", exc)

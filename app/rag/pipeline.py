@@ -24,9 +24,7 @@ class NutriLifeRAGPipeline:
     """
 
     def __init__(self, config: RAGSettings | None = None) -> None:
-        self._engine: NutriLifeQueryEngine = get_query_engine(
-            retriever_config=config
-        )
+        self._engine: NutriLifeQueryEngine = get_query_engine(retriever_config=config)
 
     def ask(self, question: str) -> RAGResponse:
         """同步查询接口。"""

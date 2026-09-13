@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_openai import ChatOpenAI
 from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.core.llm import get_chat_llm
 from app.schemas.state import AgentState
-
 
 MEMORY_KEEP_RECENT = 6
 MEMORY_THRESHOLD = 10
@@ -67,7 +67,7 @@ def _format_messages(messages: list[BaseMessage]) -> str:
 
 async def optimize_memory(
     messages: list[BaseMessage],
-    llm: Any,
+    llm: ChatOpenAI,
 ) -> list[BaseMessage]:
     """对历史消息执行「滑动窗口 + 摘要压缩」。
 
@@ -86,11 +86,14 @@ async def optimize_memory(
     try:
         history_text = _format_messages(older_messages)
         structured_llm = llm.with_structured_output(ConversationSummary)
-        result: ConversationSummary = await structured_llm.ainvoke(
-            [
-                SystemMessage(content=_SUMMARY_SYSTEM_PROMPT),
-                HumanMessage(content=f"历史对话：\n{history_text}"),
-            ]
+        result: ConversationSummary = cast(
+            ConversationSummary,
+            await structured_llm.ainvoke(
+                [
+                    SystemMessage(content=_SUMMARY_SYSTEM_PROMPT),
+                    HumanMessage(content=f"历史对话：\n{history_text}"),
+                ]
+            ),
         )
         summary = result.summary.strip()
         if not summary:

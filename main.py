@@ -28,24 +28,39 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def _env_flag(name: str, default: bool = False) -> bool:
     """读取布尔型环境变量（1/true/yes/on 视为 True）。"""
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"} if os.getenv(name) else default
+    return (
+        os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+        if os.getenv(name)
+        else default
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="NutriLife 后端启动入口")
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"), help="监听地址")
-    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")), help="监听端口")
-    parser.add_argument("--reload", action="store_true", default=_env_flag("RELOAD"), help="开发模式热重载")
+    parser.add_argument(
+        "--port", type=int, default=int(os.getenv("PORT", "8000")), help="监听端口"
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        default=_env_flag("RELOAD"),
+        help="开发模式热重载",
+    )
     args = parser.parse_args()
 
     try:
         import uvicorn
     except ImportError:
         print("未安装 uvicorn，请先安装依赖：", file=sys.stderr)
-        print("  pip install -r requirements.txt   # 或  poetry install", file=sys.stderr)
+        print(
+            "  pip install -r requirements.txt   # 或  poetry install", file=sys.stderr
+        )
         sys.exit(1)
 
-    print(f"NutriLife 后端启动中：http://{args.host}:{args.port}  (reload={args.reload})")
+    print(
+        f"NutriLife 后端启动中：http://{args.host}:{args.port}  (reload={args.reload})"
+    )
     print("API 文档：http://localhost:{}/docs".format(args.port))
 
     uvicorn.run(

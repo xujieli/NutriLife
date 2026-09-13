@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, TypedDict
 
-from langchain_core.messages import AnyMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph.message import add_messages
 
 
@@ -28,14 +28,14 @@ class AgentState(TypedDict, total=False):
         error: 错误信息（用于可观测性与降级诊断）。
     """
 
-    messages: Annotated[list[AnyMessage], add_messages]
+    messages: Annotated[list[BaseMessage], add_messages]
     current_intent: str
     router_confidence: float
     rag_query: str
     rag_context: str
     sources: list[dict[str, Any]]
     workflow_data: dict[str, Any]
-    optimized_messages: list[AnyMessage]
+    optimized_messages: list[BaseMessage]
     final_answer: str
     error: str
 

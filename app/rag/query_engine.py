@@ -18,13 +18,11 @@ NutriLife RAG 查询引擎（带拒答机制与引用溯源）。
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from llama_index.core import PromptTemplate, Settings as LlamaSettings
+from llama_index.core import PromptTemplate
 from llama_index.core.base.response.schema import Response
-from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.response_synthesizers import get_response_synthesizer
 from llama_index.core.schema import NodeWithScore
 from loguru import logger
@@ -32,14 +30,11 @@ from loguru import logger
 from app.core.config import RAGSettings, get_settings
 from app.rag.retriever import HybridRetriever
 
-
 # ──────────────────────────────────────────────────────────────────
 # 常量
 # ──────────────────────────────────────────────────────────────────
 
-FALLBACK_RESPONSE = (
-    "抱歉，我的知识库中没有关于这个问题的准确信息，建议咨询专业医生。"
-)
+FALLBACK_RESPONSE = "抱歉，我的知识库中没有关于这个问题的准确信息，建议咨询专业医生。"
 
 # 当模型无法从 Context 找到答案时，常见的不确定性表达
 _UNCERTAINTY_PATTERNS: list[str] = [
@@ -337,9 +332,8 @@ class NutriLifeQueryEngine:
             )
 
         # ── Step 4：不确定性二次校验 ─────────────────────────────
-        is_fallback = (
-            FALLBACK_RESPONSE in answer_text
-            or self._is_fallback_response(answer_text)
+        is_fallback = FALLBACK_RESPONSE in answer_text or self._is_fallback_response(
+            answer_text
         )
 
         if is_fallback:

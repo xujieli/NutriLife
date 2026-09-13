@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
 )
-from langchain_core.runnables import RunnableConfig
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -81,12 +82,10 @@ async def _rewrite_with_structured_output(
 ) -> RewrittenQuery:
     """instructor 不可用时的结构化输出降级方案。"""
     structured_llm = llm.with_structured_output(RewrittenQuery)
-    return await structured_llm.ainvoke(messages)
+    return cast(RewrittenQuery, await structured_llm.ainvoke(messages))
 
 
-async def rewrite_query_node(
-    state: AgentState
-) -> dict[str, str]:
+async def rewrite_query_node(state: AgentState) -> dict[str, str]:
     """重写查询并写入 ``state["rag_query"]``。"""
     user_input = get_latest_user_text(state)
     history_text = _format_history(state, limit=3)
