@@ -1,0 +1,107 @@
+[tool.poetry]
+name = "nutrilife"
+version = "0.1.0"
+description = "NutriLife - 个人健康与饮食管理 Agent"
+authors = ["NutriLife Team <team@nutrilife.ai>"]
+readme = "README.md"
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+
+# Web Framework
+fastapi = "^0.141.1"
+uvicorn = { version = "^0.30.0", extras = ["standard"] }
+python-multipart = "^0.0.32"
+
+# LangChain Ecosystem
+langchain = "^1.4.0"
+langchain-openai = "^1.6.2"
+langchain-community = "^0.4.2"
+langchain-core = "^1.6.2"
+langgraph = "^1.2.11"
+
+# LlamaIndex RAG
+llama-index = "^0.14.24"
+llama-index-vector-stores-qdrant = "^0.10.3"
+llama-index-retrievers-bm25 = "^0.8.0"
+
+# Observability
+langfuse = "^4.15.2"
+
+# Structured Output
+instructor = "^1.17.0"
+
+# Data Validation & Settings
+pydantic = "^2.13.0"
+pydantic-settings = "^2.15.0"
+
+# Database
+aiosqlite = "^0.22.1"
+psycopg = { version = "^3.3.5", extras = ["binary"] }
+asyncpg = "^0.31.0"
+alembic = "^1.19.2"
+
+# HTTP Client
+httpx = "^0.28.0"
+aiohttp = "^3.14.3"
+
+# Vector Store
+qdrant-client = "^1.19.0"
+
+# Utilities
+python-dotenv = "^1.2.0"
+tenacity = "^9.1.4"
+loguru = "^0.7.3"
+rich = "^14.2.0"
+uvicore = "^0.4.11"
+llama-index-embeddings-openai-like = "^0.4.0"
+llama-index-llms-langchain = "^0.9.0"
+llama-index-llms-openai-like = "^0.8.0"
+llama-index-postprocessor-flag-embedding-reranker = "^0.6.0"
+flagembedding = "^1.4.2"
+langgraph-checkpoint-postgres = "^3.1.2"
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.52"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.1.0"
+pytest-asyncio = "^1.4.0"
+pytest-cov = "^7.1.0"
+httpx = "^0.28.0"
+ruff = "^0.16.6"
+mypy = "^2.3.1"
+pre-commit = "^4.6.2"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^9.1.1"
+pytest-asyncio = "^1.4.0"
+faker = "^40.38.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "PT"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "**/__init__.py"]
