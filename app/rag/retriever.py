@@ -25,21 +25,22 @@ NutriLife 混合检索模块（Hybrid Retriever）。
 
 from __future__ import annotations
 
+import asyncio
 import json
+import typing
 from pathlib import Path
-from typing import cast, List
-from llama_index.core.embeddings.utils import EmbedType
+
 from llama_index.core import VectorStoreIndex
+from llama_index.core.embeddings.utils import EmbedType
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.schema import BaseNode, NodeWithScore, QueryBundle, TextNode
-from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
+from llama_index.retrievers.bm25 import BM25Retriever
 from loguru import logger
 
 from app.core.config import RAGSettings, get_settings
 from app.rag.indexer import load_or_create_index
-
 
 # ──────────────────────────────────────────────────────────────────
 # HybridRetriever — 核心实现
@@ -89,7 +90,7 @@ class HybridRetriever:
         # self._fusion_retriever: QueryFusionRetriever | None = None
         self._initialized = False
 
-    def initialize(self) -> "HybridRetriever":
+    def initialize(self) -> HybridRetriever:
         """
         懒加载初始化：构建向量索引和 BM25 索引。
 
@@ -128,7 +129,7 @@ class HybridRetriever:
             )
             # 如果 BM25 必须有数据，这里可以 raise ValueError
         self._bm25_retriever = BM25Retriever.from_defaults(
-            nodes=cast(List[BaseNode], bm25_nodes),
+            nodes=typing.cast(list[BaseNode], bm25_nodes),
             similarity_top_k=cfg.bm25_top_k,
         )
         logger.info("BM25 检索器初始化完成 (top_k={})", cfg.bm25_top_k)
@@ -291,3 +292,13 @@ class HybridRetriever:
             len(final_nodes),
         )
         return final_nodes
+
+    async def aretrieve(self, query: str) -> list[NodeWithScore]:
+        """异步版混合检索。
+
+        当前向量检索 / BM25 / Reranker 均由 LlamaIndex 提供，核心路径仍以
+        同步实现为主，因此这里通过线程池隔离阻塞调用，避免拖慢 FastAPI 或
+        LangGraph 的事件循环。后续若切换为全异步向量存储，可在此直接实现
+        原生异步检索。
+        """
+        return await asyncio.to_thread(self.retrieve, query)

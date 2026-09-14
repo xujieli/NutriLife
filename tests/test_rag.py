@@ -18,10 +18,9 @@ NutriLife RAG 模块测试套件。
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from dataclasses import dataclass
+from unittest.mock import MagicMock
 
+import pytest
 from llama_index.core.schema import NodeWithScore, TextNode
 
 from app.core.config import RAGSettings, get_settings
@@ -30,10 +29,9 @@ from app.rag.query_engine import (
     NutriLifeQueryEngine,
     RAGResponse,
     SourceReference,
-    _UNCERTAINTY_PATTERNS,
+    extract_source_references,
+    is_fallback_response,
 )
-from app.rag.retriever import MockReranker
-
 
 # ──────────────────────────────────────────────────────────────────
 # Fixtures
@@ -57,6 +55,25 @@ def _make_node(
         },
     )
     return NodeWithScore(node=node, score=score)
+
+
+class MockReranker:
+    """测试用 Reranker：仅做 top_n 截断与分数降序排序。"""
+
+    def __init__(self, top_n: int = 5) -> None:
+        self.top_n = top_n
+
+    def _postprocess_nodes(
+        self,
+        nodes: list[NodeWithScore],
+        query_bundle: object | None = None,
+    ) -> list[NodeWithScore]:
+        del query_bundle
+        return sorted(
+            nodes,
+            key=lambda node: node.score or 0.0,
+            reverse=True,
+        )[: self.top_n]
 
 
 @pytest.fixture
@@ -269,11 +286,18 @@ class TestSourceExtraction:
     def test_extract_sources_from_nodes(self) -> None:
         """验证 _extract_sources 正确解析 source 元数据。"""
         nodes = [
-            _make_node("豆腐嘌呤含量低", score=0.9, source="gout_diet.txt", node_id="n1"),
-            _make_node("维生素D来源", score=0.75, source="nutrition_basics.txt", node_id="n2"),
+            _make_node(
+                "豆腐嘌呤含量低", score=0.9, source="gout_diet.txt", node_id="n1"
+            ),
+            _make_node(
+                "维生素D来源",
+                score=0.75,
+                source="nutrition_basics.txt",
+                node_id="n2",
+            ),
         ]
 
-        sources = NutriLifeQueryEngine._extract_sources(nodes)
+        sources = extract_source_references(nodes)
 
         assert len(sources) == 2
         assert sources[0].source == "gout_diet.txt"
@@ -287,7 +311,7 @@ class TestSourceExtraction:
         node = TextNode(text="some content", id_="node-xyz", metadata={})
         nodes = [NodeWithScore(node=node, score=0.6)]
 
-        sources = NutriLifeQueryEngine._extract_sources(nodes)
+        sources = extract_source_references(nodes)
 
         assert sources[0].source == "未知文档"
 
@@ -296,7 +320,7 @@ class TestSourceExtraction:
         long_text = "A" * 500
         nodes = [_make_node(long_text, score=0.7, node_id="node-long")]
 
-        sources = NutriLifeQueryEngine._extract_sources(nodes)
+        sources = extract_source_references(nodes)
 
         assert len(sources[0].text_snippet) <= 200
 
@@ -435,23 +459,29 @@ class TestRAGResponseModel:
 class TestUncertaintyDetection:
     """_is_fallback_response 方法测试组。"""
 
-    @pytest.mark.parametrize("uncertain_text", [
-        "无法回答这个问题",
-        "上下文中没有相关信息",
-        "The provided context does not contain information about weather",
-        "I cannot answer based on the given context",
-        "Context does not mention this topic",
-        "no relevant information found",
-    ])
+    @pytest.mark.parametrize(
+        "uncertain_text",
+        [
+            "无法回答这个问题",
+            "上下文中没有相关信息",
+            "The provided context does not contain information about weather",
+            "I cannot answer based on the given context",
+            "Context does not mention this topic",
+            "no relevant information found",
+        ],
+    )
     def test_detects_uncertainty_patterns(self, uncertain_text: str) -> None:
         """验证不确定性关键词被正确检测。"""
-        assert NutriLifeQueryEngine._is_fallback_response(uncertain_text) is True
+        assert is_fallback_response(uncertain_text) is True
 
-    @pytest.mark.parametrize("confident_text", [
-        "痛风患者可以适量食用豆腐",
-        "维生素D主要来源于阳光照射",
-        "成人每日推荐钙摄入量为800-1200mg",
-    ])
+    @pytest.mark.parametrize(
+        "confident_text",
+        [
+            "痛风患者可以适量食用豆腐",
+            "维生素D主要来源于阳光照射",
+            "成人每日推荐钙摄入量为800-1200mg",
+        ],
+    )
     def test_confident_answers_not_flagged(self, confident_text: str) -> None:
         """验证正常的确定性回答不会被误判为拒答。"""
-        assert NutriLifeQueryEngine._is_fallback_response(confident_text) is False
+        assert is_fallback_response(confident_text) is False

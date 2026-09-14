@@ -61,7 +61,7 @@ def main() -> None:
     print(
         f"NutriLife 后端启动中：http://{args.host}:{args.port}  (reload={args.reload})"
     )
-    print("API 文档：http://localhost:{}/docs".format(args.port))
+    print(f"API 文档：http://localhost:{args.port}/docs")
 
     uvicorn.run(
         "app.main:app",

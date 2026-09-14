@@ -1,4 +1,4 @@
-"""NutriLife 主 Agent 图。
+"""NutriLife 主 Agent 图（LangGraph 编排逻辑，LlamaIndex 处理数据）。
 
 拓扑：
 
@@ -22,10 +22,19 @@
          ▼                                       ▼                ▼
       END                                       END              END
 
-说明：
-    - 图使用 AsyncPostgresSaver 持久化对话状态，支持多轮对话与断点续传。
-    - RAG 分支先重写查询，再检索上下文，最后经记忆优化后生成答案。
-    - 数据库不可用时降级为 MemorySaver，保证服务仍可运行。
+**数据 / 编排 职责分离（重构后）：**
+    - **LlamaIndex 数据层**（``app/rag/query_engine.py``）：
+      RAG 共享 Prompt 模板字符串、``FALLBACK_RESPONSE`` 拒答话术常量、
+      ``is_fallback_response()`` 不确定性检测纯函数、
+      ``extract_source_references_from_documents()`` /
+      ``source_references_to_state()`` 引用与 Context 构造纯函数、
+      ``get_langchain_retriever()`` / ``get_synthesizer()`` 懒加载单例工厂。
+    - **LangGraph 编排层**（本模块）：
+      条件路由、节点依赖、``AgentState`` 字段写入、try-except 降级兜底、
+      RAG 流式生成调用（保留小模型 astream UX）。
+    - **不再重复**：本地 ``_RAG_SYSTEM_PROMPT`` / ``_FALLBACK_RESPONSE`` /
+      ``_UNCERTAINTY_PATTERNS`` / ``_is_fallback_response`` / 手写 sources dict
+      全部删除，改为 import 数据层单一真相源。
 """
 
 from __future__ import annotations
@@ -35,198 +44,28 @@ import inspect
 import os
 from typing import TYPE_CHECKING, Any, cast
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from loguru import logger
 
-from app.agents.nodes.rewrite_query import rewrite_query_node
+from app.agents.nodes import (
+    general_chat_node,
+    rag_generate_node,
+    rag_retrieve_node,
+    rewrite_query_node,
+)
 from app.agents.router import route_after_router, router_node
 from app.agents.workflow import build_workflow_graph
 from app.core.database import DATABASE_URL
-from app.core.llm import get_chat_llm
 from app.core.memory_manager import memory_optimize_node
 from app.schemas.router import Intent
-from app.schemas.state import AgentState, get_latest_user_text
+from app.schemas.state import AgentState
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
 
 RECURSION_LIMIT = 15
-
-_GENERAL_SYSTEM_PROMPT = """\
-你是 NutriLife 营养健康助手。用简洁、友好的中文回答用户。
-如果问题与营养健康无关，礼貌地说明你的职责范围，不要编造信息。
-"""
-
-_FALLBACK_RESPONSE = "抱歉，我的知识库中没有关于这个问题的准确信息，建议咨询专业医生。"
-
-_RAG_SYSTEM_PROMPT = """\
-<instruction>
-你是 NutriLife 的专业营养健康顾问。请严格遵守以下规则回答用户问题：
-
-1. 只能依据下方「参考资料」中的内容回答，不得使用参考资料以外的任何知识，不得编造数据、研究结论或医学事实。
-2. 如果参考资料与用户问题完全无关，或参考资料为空，你必须且只能回复以下固定话术（一字不改）：
-"抱歉，我的知识库中没有关于这个问题的准确信息，建议咨询专业医生。"
-3. 回答要简洁、专业、使用中文；对关键结论引用参考资料中的具体内容；涉及医疗建议时提醒用户以专业医生意见为准。
-</instruction>
-
-参考资料：
----------------------
-{context_str}
----------------------
-
-用户问题：{query_str}
-
-回答：
-"""
-
-_UNCERTAINTY_PATTERNS = (
-    "无法回答",
-    "没有相关信息",
-    "知识库中没有",
-    "无法从提供的信息",
-    "上下文中没有",
-    "context does not",
-    "cannot answer",
-    "not enough information",
-    "i don't know",
-    "no relevant",
-    "the provided context",
-)
-
-
-def _is_fallback_response(text: str) -> bool:
-    """判断 LLM 是否表达了“无法回答”。"""
-    lowered = text.lower()
-    return any(pattern in lowered for pattern in _UNCERTAINTY_PATTERNS)
-
-
-async def rag_retrieve_node(state: AgentState) -> dict[str, Any]:
-    """RAG 检索节点：基于重写后的查询召回文档片段。"""
-    query = state.get("rag_query") or get_latest_user_text(state)
-    logger.info("RAG Retrieve: '{}'", query[:80])
-
-    try:
-
-        def _retrieve() -> list[Any]:
-            from app.core.config import get_settings
-            from app.rag.retriever import HybridRetriever
-
-            retriever = HybridRetriever(config=get_settings().rag).initialize()
-            return retriever.retrieve(query)
-
-        nodes = await asyncio.to_thread(_retrieve)
-        context = "\n\n".join(node.get_content().strip()[:1500] for node in nodes)
-        sources: list[dict[str, Any]] = []
-        for node in nodes:
-            meta = node.node.metadata or {}
-            source_name = (
-                meta.get("source")
-                or meta.get("file_name")
-                or meta.get("filename")
-                or "未知文档"
-            )
-            sources.append(
-                {
-                    "source": source_name,
-                    "snippet": node.get_content()[:200].replace("\n", " ").strip(),
-                    "score": round(node.score or 0.0, 4),
-                }
-            )
-        logger.info("RAG Retrieve: 命中 {} 个片段", len(nodes))
-        return {"rag_context": context, "sources": sources}
-    except Exception as exc:  # noqa: BLE001
-        logger.error("RAG 检索失败: {}", exc)
-        return {"rag_context": "", "sources": []}
-
-
-async def rag_generate_node(
-    state: AgentState,
-    config: RunnableConfig,
-) -> dict[str, Any]:
-    """RAG 生成节点：基于检索上下文和记忆优化后的消息生成答案。"""
-    query = state.get("rag_query") or get_latest_user_text(state)
-    context = state.get("rag_context", "")
-
-    if not context.strip():
-        answer = _FALLBACK_RESPONSE
-    else:
-        prompt = _RAG_SYSTEM_PROMPT.format(context_str=context, query_str=query)
-        messages: list[BaseMessage] = [
-            *(state.get("optimized_messages") or []),
-            SystemMessage(content=prompt),
-        ]
-        try:
-            llm = get_chat_llm(temperature=0.1)
-            chunks: list[str] = []
-            async for chunk in llm.astream(messages, config=config):
-                content = getattr(chunk, "content", None)
-                if isinstance(content, str):
-                    chunks.append(content)
-            answer = "".join(chunks).strip()
-            if not answer:
-                raise ValueError("RAG LLM 返回空回答")
-        except Exception as exc:  # noqa: BLE001
-            logger.error("RAG 生成失败: {}", exc)
-            answer = _FALLBACK_RESPONSE
-
-    if answer != _FALLBACK_RESPONSE and _is_fallback_response(answer):
-        answer = _FALLBACK_RESPONSE
-
-    return {
-        "final_answer": answer,
-        "messages": [AIMessage(content=answer)],
-    }
-
-
-async def general_chat_node(
-    state: AgentState,
-    config: RunnableConfig,
-) -> dict[str, Any]:
-    """通用闲聊节点：LLM 流式生成，失败时兜底话术。"""
-    question = get_latest_user_text(state)
-    logger.info("GeneralChat node: '{}'", question[:60])
-
-    optimized_messages = state.get("optimized_messages") or []
-    if (
-        optimized_messages
-        and isinstance(optimized_messages[0], SystemMessage)
-        and str(optimized_messages[0].content).startswith("【历史对话摘要】")
-    ):
-        messages: list[BaseMessage] = [
-            optimized_messages[0],
-            SystemMessage(content=_GENERAL_SYSTEM_PROMPT),
-            *optimized_messages[1:],
-        ]
-    else:
-        messages = [
-            SystemMessage(content=_GENERAL_SYSTEM_PROMPT),
-            *(optimized_messages or [HumanMessage(content=question)]),
-        ]
-
-    try:
-        llm = get_chat_llm(temperature=0.3)
-        chunks: list[str] = []
-        async for chunk in llm.astream(messages, config=config):
-            content = getattr(chunk, "content", None)
-            if isinstance(content, str):
-                chunks.append(content)
-        answer = "".join(chunks).strip()
-        if not answer:
-            raise ValueError("GeneralChat LLM 返回空回答")
-    except Exception as exc:  # noqa: BLE001
-        logger.error("GeneralChat 生成失败: {}", exc)
-        answer = (
-            "你好！我是 NutriLife 营养健康助手，"
-            "可以帮你记录饮食、计算热量或解答营养问题。"
-        )
-
-    return {
-        "final_answer": answer,
-        "messages": [AIMessage(content=answer)],
-    }
 
 
 def route_after_memory_optimize(state: AgentState) -> str:

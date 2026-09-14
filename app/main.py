@@ -14,9 +14,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from llama_index.core import Settings
-
-# from llama_index.llms.openai import OpenAI
-from llama_index.llms.openai_like import OpenAILike
 from loguru import logger
 
 from app.agents.graph import close_checkpointer
@@ -36,35 +33,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     lm = settings.lm_studio
-    llm_cfg = settings.llm
-
-    _temperature = llm_cfg.temperature
-    _max_tokens = llm_cfg.max_tokens
-    _streaming = llm_cfg.streaming
 
     Settings.embed_model = NormalizedBGEEmbedding(
         model_name=settings.lm_studio.embed_model,
         api_base="http://192.168.31.48:1234/v1",
         api_key=lm.api_key,
-    )
-    # Settings.llm = OpenAI(
-    #     model=lm.model,
-    #     base_url=lm.base_url,
-    #     api_key=lm.api_key,
-    #     temperature=_temperature,
-    #     max_tokens=_max_tokens,
-    #     streaming=_streaming,
-    #     request_timeout=llm_cfg.request_timeout
-    # )
-    Settings.llm = OpenAILike(
-        api_base=lm.base_url,
-        api_key=lm.api_key,
-        model=lm.base_url,
-        temperature=_temperature,
-        max_tokens=_max_tokens,
-        is_chat_model=True,
-        context_window=32768,
-        timeout=llm_cfg.request_timeout,  # 本地小模型推理慢，timeout设 10 分钟保底
     )
     await init_db()
     yield

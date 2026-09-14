@@ -25,7 +25,9 @@ NutriLife/
 │   ├── rag/
 │   │   ├── pipeline.py          # LlamaIndex RAG 主管道
 │   │   ├── indexer.py           # 文档索引 & 向量化
-│   │   └── retriever.py         # 检索器封装
+│   │   ├── retriever.py         # 混合检索器封装
+│   │   ├── langchain_bridge.py  # LlamaIndex → LangChain 检索适配桥
+│   │   └── query_engine.py      # RAG 数据组件 & 兼容查询引擎
 │   ├── tools/
 │   │   ├── nutrition_tools.py   # 食物营养查询工具
 │   │   ├── calendar_tools.py    # 饮食日历工具
