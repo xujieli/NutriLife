@@ -156,6 +156,13 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+node_modules/
+
+# 覆盖全局 gitignore 中过于宽泛的 `mcp` 规则，保留本项目 MCP 服务文件
+!mcp/
+!mcp/openfoodfacts/
+!mcp/openfoodfacts/*
+mcp/openfoodfacts/node_modules/
 
 # Spyder project settings
 .spyderproject

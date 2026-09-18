@@ -30,15 +30,17 @@ ROUTER_CONFIDENCE_THRESHOLD = 0.6
 
 _ROUTER_SYSTEM_PROMPT = """\
 <instruction>
-你是 NutriLife 的意图路由器。根据用户输入，判断它属于以下三种意图之一：
+你是 NutriLife 的意图路由器。根据用户输入，判断它属于以下四种意图之一：
 
 1. RAG_QUERY —— 营养学 / 医学知识问答，需要检索专业知识库。
-2. WORKFLOW_TASK —— 记录饮食或执行多步骤任务（提取食物 → 计算热量 → 给建议）。
-3. GENERAL_CHAT —— 日常寒暄或与营养健康无关的闲聊。
+2. WORKFLOW_TASK —— 结构化饮食记录任务（P&E 固定流程：提取食物 → 计算热量 → 判断超标 → 给建议）。
+3. REACT_TASK —— 复杂开放式营养任务（需要动态推理与多工具协作，无法用固定流程完成，如营养分析、膳食规划、综合评估）。
+4. GENERAL_CHAT —— 日常寒暄或与营养健康无关的闲聊。
 
 判断要点：
-- 提到「记录 / 吃了 / 喝了 / 计算热量 / 超标 / 摄入」等饮食记录意图 → WORKFLOW_TASK。
-- 询问「能不能吃 / 为什么 / 多少 / 症状 / 缺乏」等知识问题 → RAG_QUERY。
+- 提到「记录 / 吃了 / 喝了 / 计算热量 / 超标 / 摄入」等明确饮食记录意图，且流程固定 → WORKFLOW_TASK。
+- 需要多步推理、动态查询知识与数据、输出分析/规划/评估类结果（如「分析…是否均衡」「制定…计划」「评估…是否合适」「还缺什么营养」）→ REACT_TASK。
+- 询问「能不能吃 / 为什么 / 多少 / 症状 / 缺乏」等单一知识问题 → RAG_QUERY。
 - 其余（寒暄、无关闲聊）→ GENERAL_CHAT。
 - 无法确定时选择 GENERAL_CHAT，confidence 给较低值（如 0.3）。
 </instruction>
@@ -48,12 +50,14 @@ _ROUTER_SYSTEM_PROMPT = """\
 输入："维生素D缺乏有什么症状" → intent=RAG_QUERY, confidence=0.95
 输入："记录午餐：汉堡、薯条，计算热量并给建议" → intent=WORKFLOW_TASK, confidence=0.95
 输入："我今天吃了两个鸡蛋和一杯牛奶，帮我算算热量" → intent=WORKFLOW_TASK, confidence=0.9
+输入："帮我分析今天的饮食是否营养均衡，并给出调整建议" → intent=REACT_TASK, confidence=0.9
+输入："我想减脂，帮我制定一份低热量的一日饮食计划" → intent=REACT_TASK, confidence=0.9
 输入："你好" → intent=GENERAL_CHAT, confidence=0.9
 输入："今天天气怎么样" → intent=GENERAL_CHAT, confidence=0.9
 </examples>
 
 <output_format>
-必须输出 intent（三者之一）与 confidence（0~1 之间的数值），不要输出其他内容。
+必须输出 intent（四者之一）与 confidence（0~1 之间的数值），不要输出其他内容。
 </output_format>
 """
 
@@ -134,11 +138,13 @@ def route_after_router(state: AgentState) -> str:
     """条件边：根据路由结果决定下一个节点。
 
     Returns:
-        str: 条件边的路由键（``rag`` / ``workflow`` / ``general_chat``）。
+        str: 条件边的路由键（``rag`` / ``workflow`` / ``react`` / ``general_chat``）。
     """
     intent = state.get("current_intent", Intent.GENERAL_CHAT.value)
     if intent == Intent.RAG_QUERY.value:
         return "rag"
     if intent == Intent.WORKFLOW_TASK.value:
         return "workflow"
+    if intent == Intent.REACT_TASK.value:
+        return "react"
     return "general_chat"

@@ -54,6 +54,7 @@ from app.agents.nodes import (
     rag_retrieve_node,
     rewrite_query_node,
 )
+from app.agents.react_agent import react_agent_node
 from app.agents.router import route_after_router, router_node
 from app.agents.workflow import build_workflow_graph
 from app.core.database import DATABASE_URL
@@ -92,6 +93,7 @@ def build_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
     graph.add_node("memory_optimize", memory_optimize_node)
     graph.add_node("general_chat", general_chat_node)
     graph.add_node("workflow", build_workflow_graph())
+    graph.add_node("react", react_agent_node)
 
     graph.set_entry_point("router")
     graph.add_conditional_edges(
@@ -100,6 +102,7 @@ def build_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
         {
             "rag": "rewrite_query",
             "workflow": "workflow",
+            "react": "react",
             "general_chat": "memory_optimize",
         },
     )
@@ -116,6 +119,7 @@ def build_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
     graph.add_edge("rag_generate", END)
     graph.add_edge("general_chat", END)
     graph.add_edge("workflow", END)
+    graph.add_edge("react", END)
 
     return graph.compile(checkpointer=checkpointer)
 

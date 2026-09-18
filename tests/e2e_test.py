@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 BASE_URL = os.environ.get("NUTRILIFE_BASE_URL", "http://localhost:8000")
 CHAT_URL = f"{BASE_URL.rstrip('/')}/api/v1/chat"
 
-# 三类意图各覆盖一个场景，验证路由是否走通
+# 四类意图各覆盖一个场景，验证路由是否走通
 TEST_CASES = [
     {
         "name": "RAG 知识问答",
@@ -37,9 +37,14 @@ TEST_CASES = [
         "expect_intent": "RAG_QUERY",
     },
     {
-        "name": "Workflow 任务执行",
+        "name": "Workflow 任务执行（P&E）",
         "user_input": "记录午餐：汉堡、薯条，计算热量并给建议",
         "expect_intent": "WORKFLOW_TASK",
+    },
+    {
+        "name": "ReAct 复杂任务",
+        "user_input": "帮我分析今天的饮食是否营养均衡，并给出调整建议",
+        "expect_intent": "REACT_TASK",
     },
     {
         "name": "日常闲聊",

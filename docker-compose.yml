@@ -20,8 +20,23 @@ services:
       QDRANT_COLLECTION_NAME: nutrilife_kb
       NODE_CACHE_PATH: /app/data/nodes.json
       KNOWLEDGE_BASE_DIR: /app/data/knowledge_base
+      OPENFOODFACTS_MCP_URL: http://openfoodfacts-mcp:28375
     volumes:
       - ./data:/app/data
+    depends_on:
+      - openfoodfacts-mcp
+    restart: unless-stopped
+
+  openfoodfacts-mcp:
+    build:
+      context: .
+      dockerfile: mcp/openfoodfacts/Dockerfile
+    ports:
+      - "28375:28375"
+    environment:
+      TRANSPORT: http
+      PORT: "28375"
+      OFF_USER_AGENT: "NutriLife/0.1 (Open Food Facts MCP)"
     restart: unless-stopped
 
   frontend:

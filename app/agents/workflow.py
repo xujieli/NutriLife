@@ -9,7 +9,7 @@
 关键设计——``calculate_calories_node`` 升级为标准 LangChain Tool Calling 流程：
     1. LLM 通过 ``bind_tools`` 绑定 ``nutrition_calorie_lookup_tool``。
     2. LLM 自主判断是否需要调用工具、为每个食物生成独立的 ``tool_calls``。
-    3. 逐个执行工具（内置 Tenacity 重试 + 远程/本地/默认三级降级）。
+    3. 逐个执行工具（内置重试 + Open Food Facts MCP / 默认估算降级）。
     4. 汇总所有工具结果，计算总热量写入 ``state["workflow_data"]``。
     5. 若 LLM 未生成任何 ``tool_calls``（小模型 Tool Calling 能力不足时），
        降级为"按食物列表直接调用工具"，保证功能可用。
@@ -34,12 +34,12 @@ from app.core.llm import get_chat_llm
 from app.core.memory_manager import memory_optimize_node
 from app.schemas.nutrition import FoodExtraction
 from app.schemas.state import AgentState, get_latest_user_text
-from app.tools.nutrition_calorie_tool import (
+from app.tools.openfoodfacts_mcp_tools import (
     NUTRITION_CALORIE_TOOLS,
     NutritionCalorieLookupOutput,
+    get_fallback_calories,
     nutrition_calorie_lookup_tool,
 )
-from app.tools.nutrition_tools import get_fallback_calories
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -114,7 +114,7 @@ def _build_tool_call_messages(foods: list[dict[str, Any]]) -> list[BaseMessage]:
 _DEFAULT_TOOL: BaseTool = cast(BaseTool, nutrition_calorie_lookup_tool)
 
 
-def _execute_tool_calls(
+async def _execute_tool_calls(
     ai_msg: AIMessage,
     foods: list[dict[str, Any]],
     tool: BaseTool = _DEFAULT_TOOL,
@@ -153,7 +153,7 @@ def _execute_tool_calls(
                 tc_id or "-",
                 food_name_in_call,
             )
-            raw: dict[str, Any] = tool.invoke(tc_args)  # type: ignore[assignment]
+            raw = await tool.ainvoke(tc_args)
             parsed = NutritionCalorieLookupOutput.model_validate(raw)
             results[parsed.food_name] = parsed
         except Exception as exc:  # noqa: BLE001
@@ -172,7 +172,7 @@ def _execute_tool_calls(
             name,
         )
         try:
-            raw = tool.invoke({"food_name": name})  # type: ignore[assignment]
+            raw = await tool.ainvoke({"food_name": name})
             parsed = NutritionCalorieLookupOutput.model_validate(raw)
             results[name] = parsed
         except Exception as exc:  # noqa: BLE001
@@ -181,36 +181,14 @@ def _execute_tool_calls(
                 name,
                 exc,
             )
-            from app.tools.nutrition_tools import DEFAULT_UNKNOWN_KCAL_PER_100G
-
-            fallback_kcal = FALLBACK_CALORIE_TABLE_SAFE.get(name)
-            source = "fallback"
-            msg = "终极降级：本地粗略热量表兜底"
-            if fallback_kcal is None:
-                fallback_kcal = DEFAULT_UNKNOWN_KCAL_PER_100G
-                source = "default"
-                msg = "终极降级：未知食物默认估算值"
             results[name] = NutritionCalorieLookupOutput(
                 food_name=name,
-                kcal_per_100g=fallback_kcal,
-                source=source,
-                message=msg,
+                kcal_per_100g=get_fallback_calories(name),
+                source="default",
+                message="终极降级：Open Food Facts MCP 调用失败，使用默认估算值",
             )
 
     return list(results.values())
-
-
-# 延迟引用的安全访问（避免循环 import 的符号问题）
-FALLBACK_CALORIE_TABLE_SAFE: dict[str, float] = {}
-
-
-def _ensure_fallback_table() -> None:
-    """懒加载本地 fallback 表（仅在终极降级路径使用）。"""
-    global FALLBACK_CALORIE_TABLE_SAFE
-    if not FALLBACK_CALORIE_TABLE_SAFE:
-        from app.tools.nutrition_tools import FALLBACK_CALORIE_TABLE
-
-        FALLBACK_CALORIE_TABLE_SAFE = dict(FALLBACK_CALORIE_TABLE)
 
 
 async def extract_food_node(state: AgentState) -> dict:
@@ -254,15 +232,14 @@ async def calculate_calories_node(state: AgentState) -> dict:
         1. 构造 Prompt（System + Human，列出食物清单）。
         2. 通过 ``llm.bind_tools(NUTRITION_CALORIE_TOOLS)`` 将热量查询工具绑定到 LLM。
         3. LLM 自主推理并生成 ``tool_calls`` 列表（每个食物一条调用）。
-        4. 解析 ``tool_calls``，逐个 ``tool.invoke()`` 执行工具。
-        5. 对 LLM 遗漏的食物，降级为"直接按列表 invoke 工具"补齐。
+        4. 解析 ``tool_calls``，逐个 ``await tool.ainvoke()`` 执行工具。
+        5. 对 LLM 遗漏的食物，降级为"直接按列表 ainvoke 工具"补齐。
         6. 汇总所有结果 → 按克数计算实际热量 → 写入 state。
 
     多级兜底（小模型 + 远程服务双重不可靠场景）：
-        - LLM 未生成 ``tool_calls`` → 直接按食物列表循环 ``tool.invoke``。
-        - 单个 tool.invoke 失败 → 降级到本地 fallback / 默认估算。
+        - LLM 未生成 ``tool_calls`` → 直接按食物列表循环 ``await tool.ainvoke``。
+        - 单个工具调用失败 → 降级到默认热量估算。
     """
-    _ensure_fallback_table()
     workflow_data = state.get("workflow_data", {})
     foods = workflow_data.get("foods", [])
 
@@ -327,7 +304,7 @@ async def calculate_calories_node(state: AgentState) -> dict:
             )
 
         # ── Step 3：执行 tool_calls + 补齐遗漏 ────────────────────────
-        parsed_results = _execute_tool_calls(ai_msg, foods)
+        parsed_results = await _execute_tool_calls(ai_msg, foods)
 
     except Exception as exc:  # noqa: BLE001
         # LLM 整体失败（如 LM Studio 离线）→ 直接调用工具做终极兜底
@@ -335,7 +312,7 @@ async def calculate_calories_node(state: AgentState) -> dict:
             "Workflow.calories: LLM Tool Calling 整体失败，降级为直接 invoke 工具: {}",
             exc,
         )
-        parsed_results = _fallback_direct_tool_invoke(foods)
+        parsed_results = await _fallback_direct_tool_invoke(foods)
 
     # ── Step 4：按克数汇总实际热量 ─────────────────────────────────
     result_map: dict[str, NutritionCalorieLookupOutput] = {
@@ -351,7 +328,7 @@ async def calculate_calories_node(state: AgentState) -> dict:
             # 理论上不会走到这里（_execute_tool_calls 已做终极降级），
             # 再加一层保险，保证即使极端异常也不会 crash。
             kcal_per_100g = get_fallback_calories(name)
-            source = "fallback"
+            source = "default"
         else:
             kcal_per_100g = lookup.kcal_per_100g
             source = lookup.source
@@ -379,7 +356,7 @@ async def calculate_calories_node(state: AgentState) -> dict:
     }
 
 
-def _fallback_direct_tool_invoke(
+async def _fallback_direct_tool_invoke(
     foods: list[dict[str, Any]],
 ) -> list[NutritionCalorieLookupOutput]:
     """终极兜底：跳过 LLM，直接对每个食物调用 ``nutrition_calorie_lookup_tool``。
@@ -387,16 +364,13 @@ def _fallback_direct_tool_invoke(
     当 LLM 不可用（LM Studio 离线 / 超时 / 返回格式损坏）时使用，
     保证"计算热量"这一核心功能在极端场景下仍可用。
     """
-    from app.tools.nutrition_tools import DEFAULT_UNKNOWN_KCAL_PER_100G
-
-    _ensure_fallback_table()
     results: list[NutritionCalorieLookupOutput] = []
     for item in foods:
         name = str(item.get("name", "")).strip()
         if not name:
             continue
         try:
-            raw = _DEFAULT_TOOL.invoke({"food_name": name})
+            raw = await _DEFAULT_TOOL.ainvoke({"food_name": name})
             results.append(NutritionCalorieLookupOutput.model_validate(raw))
         except Exception as exc:  # noqa: BLE001
             logger.error(
@@ -404,18 +378,12 @@ def _fallback_direct_tool_invoke(
                 name,
                 exc,
             )
-            fallback_kcal = FALLBACK_CALORIE_TABLE_SAFE.get(name)
-            if fallback_kcal is not None:
-                source, msg = "fallback", "兜底：本地粗略热量表"
-            else:
-                fallback_kcal = DEFAULT_UNKNOWN_KCAL_PER_100G
-                source, msg = "default", "兜底：未知食物默认估算值"
             results.append(
                 NutritionCalorieLookupOutput(
                     food_name=name,
-                    kcal_per_100g=fallback_kcal,
-                    source=source,
-                    message=msg,
+                    kcal_per_100g=get_fallback_calories(name),
+                    source="default",
+                    message="终极兜底：Open Food Facts MCP 调用失败，使用默认估算值",
                 )
             )
     return results

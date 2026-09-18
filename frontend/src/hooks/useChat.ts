@@ -31,6 +31,7 @@ function genId(prefix: string): string {
 /** 根据节点名推断意图（用于在没有 intent 事件时尽早显示徽章）。 */
 function intentFromNode(node: string): Intent | undefined {
   if (node === "rag") return "RAG_QUERY";
+  if (node === "react") return "REACT_TASK";
   if (node === "general_chat") return "GENERAL_CHAT";
   if (node === "workflow" || WORKFLOW_NODES.has(node)) return "WORKFLOW_TASK";
   return undefined;
@@ -149,6 +150,9 @@ export function useChat() {
               sources: event.sources,
               isStreaming: false,
               isError: Boolean(event.error),
+              ...(m.steps?.length
+                ? { steps: m.steps.map((s) => ({ ...s, status: "done" as const })) }
+                : {}),
             }));
             break;
           }

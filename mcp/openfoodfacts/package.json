@@ -1,0 +1,12 @@
+{
+  "name": "nutrilife-openfoodfacts-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node patch-openfoodfacts.mjs && node launcher.mjs"
+  },
+  "dependencies": {
+    "@jagjeevan/openfoodfacts-mcp": "1.1.0"
+  }
+}

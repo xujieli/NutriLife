@@ -10,6 +10,7 @@ import type { Intent, Message } from "@/types";
 const INTENT_META: Record<Intent, { icon: string; label: string }> = {
   RAG_QUERY: { icon: "📚", label: "知识问答" },
   WORKFLOW_TASK: { icon: "⚙️", label: "任务执行" },
+  REACT_TASK: { icon: "🧠", label: "深度分析" },
   GENERAL_CHAT: { icon: "💬", label: "日常对话" },
 };
 

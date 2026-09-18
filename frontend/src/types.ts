@@ -1,5 +1,5 @@
 /** 意图枚举（与后端 Router 的 Intent 对齐）。 */
-export type Intent = "RAG_QUERY" | "WORKFLOW_TASK" | "GENERAL_CHAT";
+export type Intent = "RAG_QUERY" | "WORKFLOW_TASK" | "REACT_TASK" | "GENERAL_CHAT";
 
 /** RAG 引用来源。 */
 export interface SourceReference {

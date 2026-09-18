@@ -29,7 +29,8 @@ NutriLife/
 │   │   ├── langchain_bridge.py  # LlamaIndex → LangChain 检索适配桥
 │   │   └── query_engine.py      # RAG 数据组件 & 兼容查询引擎
 │   ├── tools/
-│   │   ├── nutrition_tools.py   # 食物营养查询工具
+│   │   ├── openfoodfacts_mcp_tools.py  # Open Food Facts MCP 营养查询工具
+│   │   ├── mcp_client.py        # Open Food Facts MCP JSON-RPC 客户端
 │   │   ├── calendar_tools.py    # 饮食日历工具
 │   │   └── web_search_tools.py  # 网络搜索工具
 │   ├── schemas/
@@ -39,6 +40,8 @@ NutriLife/
 │   └── db/
 │       ├── session.py           # SQLAlchemy 异步 Session 工厂
 │       └── models.py            # ORM 模型定义
+├── mcp/
+│   └── openfoodfacts/           # @jagjeevan/openfoodfacts-mcp 服务容器
 ├── tests/
 │   ├── unit/                    # 单元测试
 │   └── integration/             # 集成测试
@@ -58,7 +61,7 @@ NutriLife/
         └─► LangGraph StateGraph (agents/graph.py)
               ├─► 路由节点：意图识别
               ├─► RAG 节点：LlamaIndex 检索营养知识库
-              ├─► Tool 节点：调用 LangChain Tools
+              ├─► Tool 节点：调用 Open Food Facts MCP 工具
               └─► 生成节点：ChatOpenAI (LM Studio) 生成回答
                     └─► LangFuse Callback → 追踪 Dashboard
 ```
@@ -78,6 +81,7 @@ NutriLife/
 | 数据验证 | Pydantic v2 + Pydantic-Settings |
 | 数据库 | SQLAlchemy 2 (AsyncIO) + SQLite / PostgreSQL |
 | 前端 | React 18 + Vite + Tailwind CSS + shadcn/ui |
+| 营养数据工具 | Open Food Facts MCP（@jagjeevan/openfoodfacts-mcp） |
 
 ---
 
@@ -88,6 +92,7 @@ NutriLife/
 1. 安装 [LM Studio](https://lmstudio.ai/) 并加载 `gemma-4-12b-qat` 模型
 2. 在 LM Studio 中启动本地服务器（默认端口 `1234`）
 3. 安装 Python 3.12+ 和 [Poetry](https://python-poetry.org/)
+4. 启动 Open Food Facts MCP 服务（见下方“Open Food Facts MCP”）
 
 ### 后端启动
 
@@ -108,6 +113,29 @@ poetry run python scripts/ingest.py
 # 5. 启动开发服务器
 poetry run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+### Open Food Facts MCP
+
+营养热量查询已从本地硬编码工具替换为
+[@jagjeevan/openfoodfacts-mcp](https://www.npmjs.com/package/@jagjeevan/openfoodfacts-mcp)。
+该 MCP 服务以 HTTP 模式运行，默认监听 `28375` 端口。
+
+**方式一：Docker 启动**
+
+```bash
+docker compose up -d --build openfoodfacts-mcp
+```
+
+**方式二：本机 Node 启动**
+
+```bash
+cd mcp/openfoodfacts
+npm ci
+TRANSPORT=http PORT=28375 npm start
+```
+
+后端通过 `OPENFOODFACTS_MCP_URL` 连接该服务，默认值为
+`http://localhost:28375`。Docker Compose 中会自动注入容器网络地址。
 
 API 文档地址：http://localhost:8000/docs
 
@@ -172,7 +200,7 @@ LANGFUSE_HOST=http://localhost:3000             # 本地自托管 Docker 实例
 
 ### 4. Docker 部署
 
-项目提供 `Dockerfile`（后端）、`frontend/Dockerfile`（前端）、`frontend/nginx.conf` 与 `docker-compose.yml`：
+项目提供 `Dockerfile`（后端）、`mcp/openfoodfacts/Dockerfile`（营养 MCP 服务）、`frontend/Dockerfile`（前端）、`frontend/nginx.conf` 与 `docker-compose.yml`：
 
 ```bash
 # 一键构建并启动前后端
@@ -184,6 +212,7 @@ docker compose logs -f backend
 
 - 前端：`http://localhost:5173`（nginx 托管静态资源，反向代理 `/api` 到后端）
 - 后端：`http://localhost:8000`（含 SSE 流式）
+- Open Food Facts MCP：`http://localhost:28375`（营养数据工具服务）
 - 向量库通过卷挂载到宿主机 `./data/`，容器重建不丢索引
 
 注意：

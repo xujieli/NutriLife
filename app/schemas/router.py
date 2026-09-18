@@ -12,10 +12,18 @@ from pydantic import BaseModel, Field
 
 
 class Intent(StrEnum):
-    """用户意图枚举（三种互斥路由目标）。"""
+    """用户意图枚举（四种互斥路由目标）。
+
+    任务类意图按「任务复杂度」进一步区分：
+        - ``WORKFLOW_TASK``：结构化、步骤已知的饮食记录任务，走
+          Plan-and-Execute（P&E）固定流程。
+        - ``REACT_TASK``：开放式、需要动态推理与多工具协作的复杂营养任务，
+          走 ReAct 循环。
+    """
 
     RAG_QUERY = "RAG_QUERY"
-    WORKFLOW_TASK = "WORKFLOW_TASK"
+    WORKFLOW_TASK = "WORKFLOW_TASK"  # P&E（Plan-and-Execute）流程
+    REACT_TASK = "REACT_TASK"  # ReAct 流程
     GENERAL_CHAT = "GENERAL_CHAT"
 
 

@@ -180,6 +180,23 @@ class RAGSettings(BaseSettings):
     )
 
 
+class OpenFoodFactsMCPSettings(BaseSettings):
+    """Open Food Facts MCP 服务配置。"""
+
+    model_config = SettingsConfigDict(env_prefix="OPENFOODFACTS_MCP_")
+
+    url: str = Field(
+        default="http://localhost:28375",
+        description="Open Food Facts MCP 服务地址（不含 /mcp 路径）",
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        ge=0.1,
+        le=120.0,
+        description="调用 Open Food Facts MCP 工具的超时时间（秒）",
+    )
+
+
 class AppSettings(BaseSettings):
     """应用级别配置。"""
 
@@ -234,6 +251,9 @@ class Settings(BaseSettings):
     langfuse: LangFuseSettings = Field(default_factory=LangFuseSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     rag: RAGSettings = Field(default_factory=RAGSettings)
+    openfoodfacts_mcp: OpenFoodFactsMCPSettings = Field(
+        default_factory=OpenFoodFactsMCPSettings
+    )
 
 
 @cache
