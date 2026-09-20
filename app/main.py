@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     Settings.embed_model = NormalizedBGEEmbedding(
         model_name=settings.lm_studio.embed_model,
-        api_base="http://192.168.31.48:1234/v1",
+        api_base=lm.base_url,
         api_key=lm.api_key,
     )
     await init_db()
@@ -69,9 +69,11 @@ def create_app() -> FastAPI:
     )
 
     # 路由挂载
-    from app.api.v1 import chat
+    from app.api.v1 import auth, chat, sessions
 
     app.include_router(chat.router, prefix=settings.app.api_prefix)
+    app.include_router(auth.router, prefix=settings.app.api_prefix)
+    app.include_router(sessions.router, prefix=settings.app.api_prefix)
 
     @app.get("/", tags=["Root"])
     async def root() -> dict[str, str]:

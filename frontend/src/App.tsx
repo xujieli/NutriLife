@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { ChatInterface } from "@/components/ChatInterface";
+import { LoginDialog } from "@/components/LoginDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { useChat } from "@/hooks/useChat";
 import { cn } from "@/lib/utils";
@@ -8,11 +9,25 @@ import { cn } from "@/lib/utils";
 export default function App() {
   const chat = useChat();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
 
   const lastAssistant = [...chat.messages]
     .reverse()
     .find((m) => m.role === "assistant");
   const currentIntent = lastAssistant?.intent;
+
+  const handleLogin = async (phone: string, code: string) => {
+    setLoginLoading(true);
+    try {
+      await chat.login(phone, code);
+      setLoginOpen(false);
+    } catch (err) {
+      throw err;
+    } finally {
+      setLoginLoading(false);
+    }
+  };
 
   return (
     <div className="flex h-full overflow-hidden bg-background">
@@ -35,6 +50,9 @@ export default function App() {
         <Sidebar
           sessions={chat.sessions}
           currentSessionId={chat.currentSessionId}
+          user={chat.user}
+          hasMore={chat.hasMore}
+          loadingSessions={chat.loadingSessions}
           onNew={() => {
             chat.newSession();
             setSidebarOpen(false);
@@ -43,6 +61,12 @@ export default function App() {
             chat.selectSession(id);
             setSidebarOpen(false);
           }}
+          onLoadMore={chat.loadMoreSessions}
+          onLoginClick={() => setLoginOpen(true)}
+          onLogout={() => {
+            void chat.logout();
+          }}
+          onDelete={chat.deleteSessions}
         />
       </aside>
 
@@ -57,6 +81,14 @@ export default function App() {
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
         />
       </main>
+
+      {/* 登录弹窗 */}
+      <LoginDialog
+        open={loginOpen}
+        loading={loginLoading}
+        onClose={() => setLoginOpen(false)}
+        onLogin={handleLogin}
+      />
     </div>
   );
 }

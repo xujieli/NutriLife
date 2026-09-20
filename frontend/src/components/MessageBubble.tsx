@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Bot, ChevronDown, FileText, User } from "lucide-react";
+import { Bot, Check, ChevronDown, Copy, FileText, User } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -107,9 +107,30 @@ function SourcesCard({ sources }: { sources: SourceReference[] }) {
 
 export function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
+  const [copied, setCopied] = useState(false);
   const sources = message.sources ?? extractSourcesFromText(message.content);
   const showTyping =
     message.isStreaming && !message.content && !message.steps?.length;
+
+  const copyContent = async () => {
+    if (!message.content) return;
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用时静默失败
+    }
+  };
+
+  const timeLabel = message.createdAt
+    ? new Date(message.createdAt).toLocaleString("zh-CN", {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "";
 
   return (
     <motion.div
@@ -164,6 +185,26 @@ export function MessageBubble({ message }: { message: Message }) {
         </div>
 
         {sources.length > 0 && !isUser && <SourcesCard sources={sources} />}
+
+        {(timeLabel || message.content) && !message.isStreaming && (
+          <div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground/70">
+            {timeLabel && <span>{timeLabel}</span>}
+            {message.content && (
+              <button
+                onClick={copyContent}
+                className="inline-flex items-center gap-1 rounded transition-colors hover:text-foreground"
+                aria-label="复制消息内容"
+              >
+                {copied ? (
+                  <Check className="h-3 w-3" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+                {copied ? "已复制" : "复制"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </motion.div>
   );

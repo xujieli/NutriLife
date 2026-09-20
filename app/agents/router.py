@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
@@ -122,7 +122,7 @@ async def router_node(state: AgentState) -> dict[str, str | float | list[str]]:
     }
 
 
-def _reset_transient_state() -> dict[str, str | list[str]]:
+def _reset_transient_state() -> dict[str, Any]:
     """清空跨轮次持久化时不应保留的临时字段。"""
     return {
         "rag_query": "",
@@ -131,6 +131,8 @@ def _reset_transient_state() -> dict[str, str | list[str]]:
         "optimized_messages": [],
         "final_answer": "",
         "error": "",
+        "workflow_step": "",
+        "workflow_replans": 0,
     }
 
 

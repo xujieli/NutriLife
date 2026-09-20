@@ -1,8 +1,8 @@
 """PostgreSQL 异步数据库连接池与依赖注入。
 
 本模块使用 SQLAlchemy 2.0 async engine + ``async_sessionmaker``，
-所有数据库访问均在异步上下文中执行。连接串优先读取环境变量
-``DATABASE_URL``；未配置时使用项目默认的本地 PostgreSQL 占位符。
+所有数据库访问均在异步上下文中执行。连接串只从环境变量
+``DATABASE_URL`` 读取；未配置时抛出带明确提示的异常，禁止硬编码连接信息。
 """
 
 from __future__ import annotations
@@ -27,10 +27,12 @@ class Base(DeclarativeBase):
     """所有 SQLAlchemy ORM 模型的声明式基类。"""
 
 
-DEFAULT_DATABASE_URL = (
-    "postgresql+psycopg://postgres:postgres@localhost:5432/nutrilife"
-)
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+if not DATABASE_URL:
+    raise RuntimeError(
+        "缺少环境变量 DATABASE_URL：请先在项目根目录复制 .env.example 为 .env，"
+        "并配置正确的 PostgreSQL 连接串（如 postgresql+psycopg://user:pass@host:5432/nutrilife）。"
+    )
 
 engine: AsyncEngine = create_async_engine(
     DATABASE_URL,

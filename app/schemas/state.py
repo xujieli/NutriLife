@@ -23,6 +23,8 @@ class AgentState(TypedDict, total=False):
         rag_context: RAG 检索到的上下文（引用来源摘要）。
         sources: RAG 检索到的结构化引用来源列表（source/snippet/score），供前端展示。
         workflow_data: Workflow 子图内部流转的结构化数据（食物列表、总热量等）。
+        workflow_step: Workflow 子图中当前已完成、待 replan 验证的步骤名。
+        workflow_replans: 当前步骤的 replan（重做）次数，用于封顶防止死循环。
         optimized_messages: 经「滑动窗口 + 摘要压缩」处理后、传入最终生成节点的消息。
         final_answer: 最终回答文本。
         error: 错误信息（用于可观测性与降级诊断）。
@@ -35,6 +37,8 @@ class AgentState(TypedDict, total=False):
     rag_context: str
     sources: list[dict[str, Any]]
     workflow_data: dict[str, Any]
+    workflow_step: str
+    workflow_replans: int
     optimized_messages: list[BaseMessage]
     final_answer: str
     error: str

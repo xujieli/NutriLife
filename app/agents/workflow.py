@@ -1,18 +1,20 @@
 """WORKFLOW_TASK 子图：饮食记录 → 提取食物 → **Tool Calling 计算热量** → 阈值判断 → 生成建议。
 
-执行链（线性为主，提取为空时短路）：
+执行链（线性为主，每完成一步后加入 replan 验证；提取为空时短路）：
 
-    extract_food ──(有食物)──> calculate_calories(LLM Tool Calling 环节) ──> check_threshold ──> generate_advice
+    extract_food ─► replan ─► calculate_calories ─► replan ─► check_threshold ─► replan ─► memory_optimize ─► generate_advice
          │
-         └────────(无食物)───────────────────────────────────────────────────────────────> generate_advice
+         └────────(无食物)────────────────────────────────────────────────────────────────► memory_optimize
 
-关键设计——``calculate_calories_node`` 升级为标准 LangChain Tool Calling 流程：
-    1. LLM 通过 ``bind_tools`` 绑定 ``nutrition_calorie_lookup_tool``。
-    2. LLM 自主判断是否需要调用工具、为每个食物生成独立的 ``tool_calls``。
-    3. 逐个执行工具（内置重试 + Open Food Facts MCP / 默认估算降级）。
-    4. 汇总所有工具结果，计算总热量写入 ``state["workflow_data"]``。
-    5. 若 LLM 未生成任何 ``tool_calls``（小模型 Tool Calling 能力不足时），
-       降级为"按食物列表直接调用工具"，保证功能可用。
+关键设计：
+    1. ``calculate_calories_node`` 是标准 LangChain Tool Calling 流程
+       （LLM ``bind_tools`` → 生成 ``tool_calls`` → 执行 → 降级补齐）。
+    2. 每完成一步，``replan_node`` 对中间结果做**确定性校验**：
+       - 校验通过 → 推进下一步；
+       - 未通过且未超 ``MAX_REPLANS_PER_STEP`` → 回到当前步骤重做（replan）；
+       - 已达上限 → 强制推进（fail-safe，防止死循环）。
+    3. replan 校验不依赖 LLM（纯规则），避免小模型引入额外不确定性，
+       同时能吸收上游（Open Food Facts MCP / 本地 LLM）偶发失败。
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command
 from loguru import logger
 
 from app.core.llm import get_chat_llm
@@ -46,6 +49,9 @@ if TYPE_CHECKING:
 
 # 单餐热量阈值（千卡），超过则提示超标
 MEAL_CALORIE_THRESHOLD = 700.0
+
+# 每一步最多 replan（重做）次数：防止小模型/上游服务异常导致死循环。
+MAX_REPLANS_PER_STEP = 2
 
 _EXTRACT_PROMPT = """\
 你是营养记录助手。从用户消息中提取食物及其估算克数。
@@ -192,10 +198,11 @@ async def _execute_tool_calls(
 
 
 async def extract_food_node(state: AgentState) -> dict:
-    """提取食物：结构化输出，失败则空列表兜底。"""
+    """提取食物：结构化输出，失败则空列表兜底并标记失败。"""
     text = get_latest_user_text(state)
     logger.info("Workflow.extract_food: '{}'", text[:60])
 
+    extract_failed = False
     try:
         llm = get_chat_llm(temperature=0.0, streaming=False)
         structured = llm.with_structured_output(FoodExtraction)
@@ -209,19 +216,104 @@ async def extract_food_node(state: AgentState) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("食物提取失败，使用空列表兜底: {}", exc)
         foods = []
+        extract_failed = True
 
     logger.info("Workflow.extract_food: 提取到 {} 个食物", len(foods))
     return {
+        "workflow_step": "extract_food",
         "workflow_data": {
             "foods": [f.model_dump() for f in foods],
+            "extract_failed": extract_failed,
         },
     }
 
 
-def route_after_extract(state: AgentState) -> str:
-    """条件边：未提取到食物时直接跳转生成建议（短路）。"""
-    foods = state.get("workflow_data", {}).get("foods", [])
-    return "memory_optimize" if not foods else "calculate_calories"
+def _verify_step(step: str, workflow_data: dict[str, Any]) -> tuple[bool, str]:
+    """确定性校验某一步骤的中间结果是否满足「继续」条件。
+
+    Returns:
+        (是否通过, 未通过原因)。原因仅用于日志，便于人工排查。
+    """
+    if step == "extract_food":
+        foods = workflow_data.get("foods", [])
+        failed = bool(workflow_data.get("extract_failed", False))
+        if not foods:
+            # 结构化输出成功但为空 → 用户确实没提食物，不算失败。
+            return (not failed), "食物提取失败" if failed else ""
+        for food in foods:
+            if not str(food.get("name", "")).strip():
+                return False, "存在名称为空的食物"
+        return True, ""
+
+    if step == "calculate_calories":
+        foods = workflow_data.get("foods", [])
+        default_count = sum(1 for f in foods if f.get("source") == "default")
+        if default_count > 0:
+            return False, f"{default_count} 个食物使用了默认估算值"
+        return True, ""
+
+    if step == "check_threshold":
+        total = workflow_data.get("total_calories")
+        if not isinstance(total, (int, float)):
+            return False, "总热量缺失或非法"
+        return True, ""
+
+    # 未知步骤默认放行，避免阻断流程。
+    return True, ""
+
+
+def _next_step(step: str, workflow_data: dict[str, Any]) -> str:
+    """返回当前步骤校验通过后的下一个节点名。"""
+    if step == "extract_food":
+        return "calculate_calories" if workflow_data.get("foods") else "memory_optimize"
+    if step == "calculate_calories":
+        return "check_threshold"
+    if step == "check_threshold":
+        return "memory_optimize"
+    return END
+
+
+def replan_node(state: AgentState) -> Command:
+    """每完成一步后的 replan 验证节点。
+
+    使用 ``Command(goto=...)`` 同时完成「状态更新 + 路由」：
+        - 校验通过 → 推进下一步；
+        - 未通过且未达上限 → 回到当前步骤重做（replan）；
+        - 已达上限 → 强制推进，防止死循环。
+    """
+    workflow_data = state.get("workflow_data", {})
+    step = str(state.get("workflow_step", ""))
+    replans = int(state.get("workflow_replans", 0) or 0)
+
+    ok, reason = _verify_step(step, workflow_data)
+    if ok:
+        logger.info("Replan: 步骤 '{}' 校验通过，推进", step)
+        return Command(
+            update={"workflow_replans": 0},
+            goto=_next_step(step, workflow_data),
+        )
+
+    if replans < MAX_REPLANS_PER_STEP:
+        logger.warning(
+            "Replan: 步骤 '{}' 校验未通过（{}），第 {} 次重做",
+            step,
+            reason,
+            replans + 1,
+        )
+        return Command(
+            update={"workflow_replans": replans + 1},
+            goto=step,
+        )
+
+    logger.error(
+        "Replan: 步骤 '{}' 重做 {} 次后仍不通过，强制推进",
+        step,
+        MAX_REPLANS_PER_STEP,
+    )
+    return Command(
+        update={"workflow_replans": 0},
+        goto=_next_step(step, workflow_data),
+    )
 
 
 async def calculate_calories_node(state: AgentState) -> dict:
@@ -246,6 +338,7 @@ async def calculate_calories_node(state: AgentState) -> dict:
     if not foods:
         logger.info("Workflow.calories: 无食物，跳过 Tool Calling")
         return {
+            "workflow_step": "calculate_calories",
             "workflow_data": {
                 **workflow_data,
                 "foods": [],
@@ -348,6 +441,7 @@ async def calculate_calories_node(state: AgentState) -> dict:
         "Workflow.calories: 总热量 {:.1f} kcal（{} 个食物）", total, len(enriched)
     )
     return {
+        "workflow_step": "calculate_calories",
         "workflow_data": {
             **workflow_data,
             "foods": enriched,
@@ -400,6 +494,7 @@ def check_threshold_node(state: AgentState) -> dict:
         exceeded,
     )
     return {
+        "workflow_step": "check_threshold",
         "workflow_data": {
             **workflow_data,
             "exceeded": exceeded,
@@ -461,25 +556,19 @@ def _fallback_advice(total: float, exceeded: bool) -> str:
 
 
 def build_workflow_graph() -> CompiledStateGraph:
-    """构建并编译 WORKFLOW_TASK 子图。"""
+    """构建并编译 WORKFLOW_TASK 子图（每步后带 replan 验证）。"""
     workflow = StateGraph(AgentState)
     workflow.add_node("extract_food", extract_food_node)
     workflow.add_node("calculate_calories", calculate_calories_node)
     workflow.add_node("check_threshold", check_threshold_node)
     workflow.add_node("memory_optimize", memory_optimize_node)
     workflow.add_node("generate_advice", generate_advice_node)
+    workflow.add_node("replan", replan_node)
 
     workflow.set_entry_point("extract_food")
-    workflow.add_conditional_edges(
-        "extract_food",
-        route_after_extract,
-        {
-            "calculate_calories": "calculate_calories",
-            "memory_optimize": "memory_optimize",
-        },
-    )
-    workflow.add_edge("calculate_calories", "check_threshold")
-    workflow.add_edge("check_threshold", "memory_optimize")
+    workflow.add_edge("extract_food", "replan")
+    workflow.add_edge("calculate_calories", "replan")
+    workflow.add_edge("check_threshold", "replan")
     workflow.add_edge("memory_optimize", "generate_advice")
     workflow.add_edge("generate_advice", END)
 

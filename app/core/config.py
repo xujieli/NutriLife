@@ -9,7 +9,7 @@ from functools import cache
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field, HttpUrl, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 将 .env 加载到 os.environ：pydantic-settings 的嵌套模型（AppSettings / LangFuseSettings
@@ -97,13 +97,17 @@ class LangFuseSettings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    """数据库连接配置。"""
+    """数据库连接配置。
+
+    连接串仅允许通过环境变量 ``DATABASE_URL`` 提供，不设置任何默认值，
+    缺失时由 ``app.core.database`` 抛出带明确提示的异常。
+    """
 
     model_config = SettingsConfigDict(env_prefix="")
 
     database_url: str = Field(
-        default="postgresql+psycopg://jerry:jerry@localhost:5432/nutrilife",
-        description="SQLAlchemy 异步数据库连接字符串",
+        ...,
+        description="SQLAlchemy 异步数据库连接字符串（必须通过环境变量 DATABASE_URL 提供）",
     )
 
 
@@ -223,6 +227,36 @@ class AppSettings(BaseSettings):
     )
 
 
+class AuthSettings(BaseSettings):
+    """身份鉴权（JWT + HttpOnly Cookie）配置。"""
+
+    model_config = SettingsConfigDict(env_prefix="AUTH_")
+
+    jwt_expire_days: int = Field(
+        default=7,
+        ge=1,
+        description="JWT 令牌有效期（天），默认 7 天",
+    )
+    cookie_name: str = Field(
+        default="nutrilife_access_token",
+        description="存储 JWT 的 HttpOnly Cookie 名称",
+    )
+    cookie_secure: bool = Field(
+        default=False,
+        description="Cookie 是否仅通过 HTTPS 传输（生产环境建议开启）",
+    )
+    cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        default="lax",
+        description="Cookie SameSite 属性",
+    )
+    code_length: int = Field(
+        default=6,
+        ge=1,
+        le=11,
+        description="登录验证码长度，验证码默认为手机号后 N 位",
+    )
+
+
 class Settings(BaseSettings):
     """
     NutriLife 顶层配置聚合类。
@@ -246,6 +280,7 @@ class Settings(BaseSettings):
     )
 
     app: AppSettings = Field(default_factory=AppSettings)
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     lm_studio: LMStudioSettings = Field(default_factory=LMStudioSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     langfuse: LangFuseSettings = Field(default_factory=LangFuseSettings)

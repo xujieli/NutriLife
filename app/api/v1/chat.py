@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -32,10 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import RECURSION_LIMIT, get_graph
 from app.core.config import get_settings
-from app.core.database import get_async_session
+from app.core.database import AsyncSessionFactory, get_async_session
 from app.core.langfuse import get_langfuse_handler
-from app.core.models import SessionMetadata
-from app.schemas.chat import ChatRequest, SessionCreateRequest, SessionResponse
+from app.core.models import Message, SessionMetadata, User
+from app.core.security import get_current_user_optional
+from app.schemas.chat import ChatRequest
 
 if TYPE_CHECKING:
     # 静态类型检查时，Pylance 只走这里，认为它永远是 langgraph 的类
@@ -94,8 +95,13 @@ async def _save_session_metadata(
     session: AsyncSession,
     session_id: str,
     user_input: str,
+    user_id: str | None = None,
 ) -> None:
-    """写入或更新会话元数据；数据库不可用时只记录日志。"""
+    """写入或更新会话元数据；数据库不可用时只记录日志。
+
+    Args:
+        user_id: 已登录用户的 ``str(user.id)``，未登录为 None。
+    """
     try:
         result = await session.execute(
             select(SessionMetadata).where(SessionMetadata.session_id == session_id)
@@ -105,28 +111,33 @@ async def _save_session_metadata(
             session.add(
                 SessionMetadata(
                     session_id=session_id,
+                    user_id=user_id,
                     title=_title_from_input(user_input),
                 )
             )
         else:
             row.updated_at = datetime.now(UTC)
+            # 用户此前匿名创建了会话，后续登录后继续对话时补绑账号
+            if user_id is not None and row.user_id is None:
+                row.user_id = user_id
         await session.commit()
     except Exception as exc:  # noqa: BLE001
         await session.rollback()
         logger.error("会话元数据写入失败（对话仍会继续）: {}", exc)
 
 
-def _sessions_response(rows: list[SessionMetadata]) -> list[SessionResponse]:
-    """ORM 行转 API 响应。"""
-    return [
-        SessionResponse(
-            session_id=row.session_id,
-            title=row.title,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-        )
-        for row in rows
-    ]
+async def _save_message(session_id: str, role: str, content: str) -> None:
+    """持久化单条聊天消息；数据库不可用时只记录日志，不中断对话。"""
+    if not content:
+        return
+    try:
+        async with AsyncSessionFactory() as session:
+            session.add(
+                Message(session_id=session_id, role=role, content=content)
+            )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("消息持久化失败（对话仍会继续）: {}", exc)
 
 
 def _map_event(event: StreamEvent) -> dict[str, Any] | None:
@@ -185,6 +196,7 @@ def _is_root_end(event: StreamEvent) -> bool:
 async def chat(
     request: ChatRequest,
     session: AsyncSession = Depends(get_async_session),
+    user: User | None = Depends(get_current_user_optional),
 ) -> StreamingResponse | JSONResponse:
     """流式对话接口。
 
@@ -205,7 +217,11 @@ async def chat(
             },
         )
 
-    await _save_session_metadata(session, session_id, user_input)
+    # 绑定用户（未登录为 None）并持久化用户消息
+    await _save_session_metadata(
+        session, session_id, user_input, user_id=str(user.id) if user else None
+    )
+    await _save_message(session_id, "user", user_input)
 
     # ── LangFuse trace：v3 凭据由 handler 单例客户端提供，trace 属性走 config metadata ──
     handler = get_langfuse_handler()
@@ -217,7 +233,7 @@ async def chat(
         "configurable": {"thread_id": session_id},
         "metadata": {
             "langfuse_session_id": session_id,
-            "langfuse_user_id": "anonymous",
+            "langfuse_user_id": str(user.id) if user else "anonymous",
             "langfuse_tags": ["nutrilife", "chat"],
         },
     }
@@ -250,11 +266,12 @@ async def chat(
                 "触发 recursion_limit={}，返回已生成的部分内容", RECURSION_LIMIT
             )
             partial = "".join(streamed_text).strip()
+            answer = partial or "抱歉，回答因处理步骤超限而被截断，请尝试更简洁的问题。"
+            await _save_message(session_id, "assistant", answer)
             yield _sse(
                 {
                     "type": "done",
-                    "content": partial
-                    or "抱歉，回答因处理步骤超限而被截断，请尝试更简洁的问题。",
+                    "content": answer,
                     "session_id": session_id,
                     "intent": final_state.get("current_intent", ""),
                     "truncated": True,
@@ -272,6 +289,7 @@ async def chat(
             )
         else:
             answer = final_state.get("final_answer") or "".join(streamed_text)
+            await _save_message(session_id, "assistant", answer)
             yield _sse(
                 {
                     "type": "done",
@@ -292,50 +310,4 @@ async def chat(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
-    )
-
-
-@router.get("/sessions", response_model=list[SessionResponse])
-async def list_sessions(
-    session: AsyncSession = Depends(get_async_session),
-) -> list[SessionResponse]:
-    """返回历史会话列表，按最近更新时间倒序。"""
-    try:
-        result = await session.execute(
-            select(SessionMetadata).order_by(SessionMetadata.updated_at.desc())
-        )
-        rows = list(result.scalars().all())
-        return _sessions_response(rows)
-    except Exception as exc:  # noqa: BLE001
-        await session.rollback()
-        logger.error("查询历史会话失败: {}", exc)
-        raise HTTPException(status_code=503, detail="会话数据库暂不可用") from exc
-
-
-@router.post("/sessions", response_model=SessionResponse, status_code=201)
-async def create_session(
-    payload: SessionCreateRequest,
-    session: AsyncSession = Depends(get_async_session),
-) -> SessionResponse:
-    """创建新会话并写入会话元数据。"""
-    session_id = str(uuid.uuid4())
-    row = SessionMetadata(
-        session_id=session_id,
-        title=(payload.title or "").strip() or "新对话",
-    )
-
-    try:
-        session.add(row)
-        await session.commit()
-        await session.refresh(row)
-    except Exception as exc:  # noqa: BLE001
-        await session.rollback()
-        logger.error("创建会话失败: {}", exc)
-        raise HTTPException(status_code=503, detail="会话数据库暂不可用") from exc
-
-    return SessionResponse(
-        session_id=row.session_id,
-        title=row.title,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
     )

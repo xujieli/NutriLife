@@ -72,15 +72,19 @@ export function ChatInterface({
   const title =
     messages.find((m) => m.role === "user")?.content.slice(0, 24) || "新对话";
 
-  // 贴近底部时自动滚动到底（用户上翻阅读时不打扰）
+  // 流式输出时始终钉在底部；非流式时仅在贴近底部时跟随（用户上翻阅读不打扰）
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (nearBottom) {
+    if (isStreaming) {
       el.scrollTop = el.scrollHeight;
+    } else {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      if (nearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
-  }, [messages]);
+  }, [messages, isStreaming]);
 
   return (
     <div className="flex h-full flex-col">
