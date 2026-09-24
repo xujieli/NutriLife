@@ -50,8 +50,8 @@ Few-shot：
 """
 
 
-def _format_history(state: AgentState, limit: int = 3) -> str:
-    """提取当前输入之前的最近 N 条历史消息。"""
+def format_history(state: AgentState, limit: int = 3) -> str:
+    """提取当前输入之前的最近 N 条历史消息（供 RAG 与路由器复用）。"""
     messages: list[BaseMessage] = list(state.get("messages", []))
     if messages and isinstance(messages[-1], HumanMessage):
         messages = messages[:-1]
@@ -85,12 +85,22 @@ async def _rewrite_with_structured_output(
     return cast(RewrittenQuery, await structured_llm.ainvoke(messages))
 
 
-async def rewrite_query_node(state: AgentState) -> dict[str, str]:
-    """重写查询并写入 ``state["rag_query"]``。"""
-    user_input = get_latest_user_text(state)
-    history_text = _format_history(state, limit=3)
-    logger.info("RewriteQuery: 输入 '{}'", user_input[:60])
+async def rewrite_query(user_input: str, history_text: str) -> str:
+    """结合历史，把当前问题改写成独立、完整、适合检索的问题。
 
+    该函数是「问题改写」的唯一抽象，供两处复用：
+        - ``rewrite_query_node``：RAG 分支检索前的查询改写；
+        - 路由器（``app.agents.router``）：意图识别前的问题澄清。
+
+    任何失败都降级返回原始输入，保证主流程不中断。
+
+    Args:
+        user_input: 当前用户输入。
+        history_text: 格式化后的历史对话文本（无历史时传空字符串）。
+
+    Returns:
+        str: 改写后的独立完整问题；失败时返回原始输入。
+    """
     prompt_messages: list[BaseMessage] = [
         SystemMessage(content=_REWRITE_SYSTEM_PROMPT),
         HumanMessage(
@@ -104,11 +114,6 @@ async def rewrite_query_node(state: AgentState) -> dict[str, str]:
     try:
         llm = get_chat_llm(temperature=0.0, streaming=False)
         result = await _rewrite_with_structured_output(llm, prompt_messages)
-        # try:
-        #     result = await _rewrite_with_instructor(llm, prompt_messages)
-        # except Exception as exc:  # noqa: BLE001
-        #     logger.warning("instructor 改写失败，降级 with_structured_output: {}", exc)
-        #     result = await _rewrite_with_structured_output(llm, prompt_messages)
 
         query = result.query.strip()
         if not query:
@@ -119,7 +124,17 @@ async def rewrite_query_node(state: AgentState) -> dict[str, str]:
             query[:80],
             result.reasoning[:60],
         )
-        return {"rag_query": query}
+        return query
     except Exception as exc:  # noqa: BLE001
         logger.error("查询重写完全失败，降级使用原始输入: {}", exc)
-        return {"rag_query": user_input}
+        return user_input
+
+
+async def rewrite_query_node(state: AgentState) -> dict[str, str]:
+    """重写查询并写入 ``state["rag_query"]``（复用 ``rewrite_query`` 抽象）。"""
+    user_input = get_latest_user_text(state)
+    history_text = format_history(state, limit=3)
+    logger.info("RewriteQuery: 输入 '{}'", user_input[:60])
+
+    query = await rewrite_query(user_input, history_text)
+    return {"rag_query": query}

@@ -53,7 +53,9 @@ else:
 router = APIRouter()
 
 # 产生"最终回答"的节点（其余节点视为"思考中"）。
-FINAL_ANSWER_NODES = frozenset({"rag_generate", "general_chat", "generate_advice"})
+FINAL_ANSWER_NODES = frozenset(
+    {"rag_generate", "general_chat", "generate_advice", "reviewer"}
+)
 
 # LM Studio 健康检查缓存（避免每个请求额外打一次网络、拖慢首 token）
 _HEALTH_CACHE: dict[str, float | bool] = {"checked_at": 0.0, "healthy": True}

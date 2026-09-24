@@ -8,8 +8,11 @@
 2. **双层兜底**：
    - 结构化输出调用/解析失败（如服务不支持 function calling）→ 回退 GENERAL_CHAT；
    - 置信度低于阈值 → 回退 GENERAL_CHAT。
-3. **few-shot 提示**——系统 Prompt 内置三类意图的具体示例，用例子锚定边界，
+3. **few-shot 提示**——系统 Prompt 内置多类意图的具体示例，用例子锚定边界，
    降低小模型对长指令的理解成本。
+4. **意图识别前的问题澄清**——先用 ``ClarityCheck`` 判断当前问题是否清晰；
+   若不够清晰且会话存在历史，则复用 ``rewrite_query`` 抽象结合历史重写问题，
+   再进入意图识别，避免指代/省略导致误路由。
 """
 
 from __future__ import annotations
@@ -19,14 +22,27 @@ from typing import Any, cast
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 
+from app.agents.nodes.rewrite_query_node import format_history, rewrite_query
 from app.core.llm import get_chat_llm
-from app.schemas.router import Intent, RouterOutput
+from app.schemas.router import ClarityCheck, Intent, RouterOutput
 from app.schemas.state import AgentState, get_latest_user_text
 
 # 置信度阈值：低于此值一律回退 GENERAL_CHAT。
 # 小模型普遍高估自身置信度，故该阈值是"粗粒度安全网"，真正的护栏是
 # 枚举强约束 + few-shot 示例。
 ROUTER_CONFIDENCE_THRESHOLD = 0.6
+
+_CLARITY_SYSTEM_PROMPT = """\
+<instruction>
+你是 NutriLife 的问题清晰度判断器。判断当前用户输入是否足够清晰、能否脱离历史上下文独立判断意图。
+
+判断标准：
+- 清晰（is_clear=true）：问题独立完整、指代明确，如「记录午餐：汉堡薯条，算热量」「痛风能吃豆制品吗」。
+- 不清晰（is_clear=false）：包含「这个 / 它 / 那个 / 这样 / 呢」等指代，或省略了关键对象、依赖上文才能理解，如「那热量超标了吗」「它能吃吗」「再给我点建议」。
+
+只输出 is_clear（true/false）与 reasoning（一句话），不要输出其他内容。
+</instruction>
+"""
 
 _ROUTER_SYSTEM_PROMPT = """\
 <instruction>
@@ -35,10 +51,12 @@ _ROUTER_SYSTEM_PROMPT = """\
 1. RAG_QUERY —— 营养学 / 医学知识问答，需要检索专业知识库。
 2. WORKFLOW_TASK —— 结构化饮食记录任务（P&E 固定流程：提取食物 → 计算热量 → 判断超标 → 给建议）。
 3. REACT_TASK —— 复杂开放式营养任务（需要动态推理与多工具协作，无法用固定流程完成，如营养分析、膳食规划、综合评估）。
-4. GENERAL_CHAT —— 日常寒暄或与营养健康无关的闲聊。
+4. PARALLEL_ANALYSIS —— 需要「多个维度同时」综合评估的任务（如从热量、疾病禁忌、均衡度等多个角度同时评估一顿饭），走并行子 Agent 协作流程。
+5. GENERAL_CHAT —— 日常寒暄或与营养健康无关的闲聊。
 
 判断要点：
 - 提到「记录 / 吃了 / 喝了 / 计算热量 / 超标 / 摄入」等明确饮食记录意图，且流程固定 → WORKFLOW_TASK。
+- 明确要求「多维度 / 多方面 / 综合评估 / 全面评估 / 同时分析」且给出具体饮食记录 → PARALLEL_ANALYSIS。
 - 需要多步推理、动态查询知识与数据、输出分析/规划/评估类结果（如「分析…是否均衡」「制定…计划」「评估…是否合适」「还缺什么营养」）→ REACT_TASK。
 - 询问「能不能吃 / 为什么 / 多少 / 症状 / 缺乏」等单一知识问题 → RAG_QUERY。
 - 其余（寒暄、无关闲聊）→ GENERAL_CHAT。
@@ -52,6 +70,8 @@ _ROUTER_SYSTEM_PROMPT = """\
 输入："我今天吃了两个鸡蛋和一杯牛奶，帮我算算热量" → intent=WORKFLOW_TASK, confidence=0.9
 输入："帮我分析今天的饮食是否营养均衡，并给出调整建议" → intent=REACT_TASK, confidence=0.9
 输入："我想减脂，帮我制定一份低热量的一日饮食计划" → intent=REACT_TASK, confidence=0.9
+输入："我从热量、痛风禁忌、均衡度三个维度全面评估这顿午饭" → intent=PARALLEL_ANALYSIS, confidence=0.9
+输入："对这份饮食记录做一次多方面的综合健康评估" → intent=PARALLEL_ANALYSIS, confidence=0.9
 输入："你好" → intent=GENERAL_CHAT, confidence=0.9
 输入："今天天气怎么样" → intent=GENERAL_CHAT, confidence=0.9
 </examples>
@@ -62,14 +82,64 @@ _ROUTER_SYSTEM_PROMPT = """\
 """
 
 
+def _has_history(state: AgentState) -> bool:
+    """判断当前会话是否存在「当前输入之前」的历史消息。"""
+    messages = list(state.get("messages", []))
+    if messages and isinstance(messages[-1], HumanMessage):
+        messages = messages[:-1]
+    return bool(messages)
+
+
+async def _clarify_question(state: AgentState, question: str) -> str:
+    """意图识别前的问题澄清。
+
+    先判断问题是否清晰；不清晰且存在历史时，复用 ``rewrite_query`` 抽象
+    结合历史重写问题。清晰度判断或改写失败时，均降级返回原始问题。
+    """
+    try:
+        llm = get_chat_llm(temperature=0.0, streaming=False)
+        structured_llm = llm.with_structured_output(ClarityCheck)
+        clarity: ClarityCheck = cast(
+            ClarityCheck,
+            await structured_llm.ainvoke(
+                [
+                    SystemMessage(content=_CLARITY_SYSTEM_PROMPT),
+                    HumanMessage(content=question),
+                ]
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Router 清晰度判断失败，视为清晰并使用原始问题: {}", exc)
+        return question
+
+    if clarity.is_clear:
+        logger.info(
+            "Router 清晰度判断：问题清晰，reasoning='{}'", clarity.reasoning[:60]
+        )
+        return question
+
+    history_text = format_history(state, limit=3)
+    logger.info(
+        "Router 清晰度判断：问题不清晰（{}），结合历史重写", clarity.reasoning[:60]
+    )
+    return await rewrite_query(question, history_text)
+
+
 async def router_node(state: AgentState) -> dict[str, str | float | list[str]]:
     """路由节点：结构化输出 + 置信度兜底。
+
+    在意图识别之前，先做「问题澄清」：问题不清晰且存在历史时，结合历史
+    重写后再判断意图。
 
     Returns:
         dict: 写入 ``current_intent`` 与 ``router_confidence``。
     """
     question = get_latest_user_text(state)
     logger.info("Router: 输入 '{}'", question[:60])
+
+    # ── 意图识别前的问题澄清（不清晰 + 有历史 → 重写） ───────────
+    if _has_history(state):
+        question = await _clarify_question(state, question)
 
     # ── 结构化输出（function calling 强约束枚举）──────────────────
     try:
@@ -133,6 +203,10 @@ def _reset_transient_state() -> dict[str, Any]:
         "error": "",
         "workflow_step": "",
         "workflow_replans": 0,
+        "parallel_run_id": "",
+        "parallel_messages": [],
+        "parallel_artifacts": [],
+        "parallel_audit_trail": [],
     }
 
 
@@ -140,7 +214,8 @@ def route_after_router(state: AgentState) -> str:
     """条件边：根据路由结果决定下一个节点。
 
     Returns:
-        str: 条件边的路由键（``rag`` / ``workflow`` / ``react`` / ``general_chat``）。
+        str: 条件边的路由键（``rag`` / ``workflow`` / ``react`` /
+            ``parallel`` / ``general_chat``）。
     """
     intent = state.get("current_intent", Intent.GENERAL_CHAT.value)
     if intent == Intent.RAG_QUERY.value:
@@ -149,4 +224,6 @@ def route_after_router(state: AgentState) -> str:
         return "workflow"
     if intent == Intent.REACT_TASK.value:
         return "react"
+    if intent == Intent.PARALLEL_ANALYSIS.value:
+        return "parallel"
     return "general_chat"

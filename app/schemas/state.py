@@ -27,6 +27,10 @@ class AgentState(TypedDict, total=False):
         workflow_replans: 当前步骤的 replan（重做）次数，用于封顶防止死循环。
         optimized_messages: 经「滑动窗口 + 摘要压缩」处理后、传入最终生成节点的消息。
         final_answer: 最终回答文本。
+        parallel_run_id: 并行子 Agent 协作场景（综合膳食评估）本次运行 ID。
+        parallel_messages: 并行子 Agent 的协调消息列表（仅含引用，不含产物内容）。
+        parallel_artifacts: 并行子 Agent 产出的产物引用列表。
+        parallel_audit_trail: 并行子 Agent 协作的审计事件列表。
         error: 错误信息（用于可观测性与降级诊断）。
     """
 
@@ -41,6 +45,10 @@ class AgentState(TypedDict, total=False):
     workflow_replans: int
     optimized_messages: list[BaseMessage]
     final_answer: str
+    parallel_run_id: str
+    parallel_messages: list[dict[str, Any]]
+    parallel_artifacts: list[dict[str, Any]]
+    parallel_audit_trail: list[dict[str, Any]]
     error: str
 
 
